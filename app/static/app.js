@@ -279,7 +279,6 @@ async function loadEvents(reset) {
   const p = new URLSearchParams({ limit: PAGE_SIZE });
   if (state.filter.channel) p.set('channel', state.filter.channel);
   if (state.filter.type === 'shirtless') p.set('shirtless', 'true');
-  if (state.filter.type === 'white' || state.filter.type === 'black') p.set('shirt', state.filter.type);
   if (state.filter.date) {
     const [s, e] = dayRange(state.filter.date);
     p.set('start', s);
@@ -319,8 +318,6 @@ async function loadEvents(reset) {
 function matchesFilter(ev) {
   if (state.filter.channel && Number(state.filter.channel) !== ev.channel) return false;
   if (state.filter.type === 'shirtless' && !ev.shirtless) return false;
-  if ((state.filter.type === 'white' || state.filter.type === 'black')
-      && !(ev.detections || []).some((d) => d.shirt === state.filter.type)) return false;
   if (state.filter.date) {
     const [s, e] = dayRange(state.filter.date);
     if (ev.ts < s || ev.ts >= e) return false;
@@ -567,12 +564,7 @@ function drawBoxes(ev, img) {
   for (const d of ev.detections) {
     const [x1, y1, x2, y2] = d.box;
     const bad = d.shirtless && !ev.reviewed;
-    let label;
-    if (d.shirtless_score == null) label = 'person';
-    else if (bad) label = `no shirt ${Math.round(d.shirtless_score * 100)}%`;
-    else if (d.shirtless) label = 'shirt (reviewed)';
-    else if (d.shirt) label = `${d.shirt} shirt`;
-    else label = `shirt ${Math.round((1 - d.shirtless_score) * 100)}%`;
+    const label = bad ? `no shirt ${Math.round(d.shirtless_score * 100)}%` : 'person';
     const box = el('div', { class: `lb-box${bad ? ' bad' : ''}` }, el('span', {}, label));
     Object.assign(box.style, {
       left: `${(x1 / W) * 100}%`, top: `${(y1 / H) * 100}%`,
@@ -771,8 +763,6 @@ function changed() {
 
 const DETECT_ITEMS = [
   ['person', 'Person', 'anyone, including people too far away to tell their clothing', null],
-  ['white', 'White shirt', '', '#f2f2f2'],
-  ['black', 'Black shirt', '', '#111'],
   ['none', 'No shirt', 'also turns on the red no-shirt alert', '#d9a07a'],
 ];
 
@@ -782,19 +772,14 @@ function detectEditor(cam) {
     const input = el('input', { type: 'checkbox' });
     input.checked = cam.detect[key];
     input.addEventListener('change', () => { cam.detect[key] = input.checked; renderSchedule(); changed(); });
-    // White/black are already covered while "Person" is ticked.
-    const implied = cam.detect.person && (key === 'white' || key === 'black');
-    box.append(el('label', { class: implied ? 'implied' : '', title: implied ? 'Included in Person' : title },
+    box.append(el('label', { title },
       input, ...(colour ? [el('span', { class: 'swatch', style: `background:${colour}` })] : []), label));
   }
   const parts = [];
   const any = Object.values(cam.detect).some(Boolean);
   if (!any) parts.push(el('span', { class: 'warn-text' }, 'Nothing ticked: this camera will not capture anything.'));
   else if (cam.detect.person) parts.push('Captures everyone' + (cam.detect.none ? ' and alerts on no shirt.' : ' (no-shirt alerts off).'));
-  else {
-    const kinds = DETECT_ITEMS.filter(([k]) => k !== 'person' && cam.detect[k]).map(([, l]) => l.toLowerCase());
-    parts.push(`Captures only people with: ${kinds.join(', ')}. People too far away to judge clothing are skipped.`);
-  }
+  else parts.push('Captures only people without a shirt. People too far away to judge clothing are skipped.');
   return el('div', {}, box, el('p', { class: 'hint' }, ...parts));
 }
 

@@ -100,21 +100,18 @@ container instead:
    (at most one per camera per `PERSON_COOLDOWN_SECONDS`), so someone standing still for
    10 minutes produces one event, not hundreds.
 3. Each person fully in view and at least `SHIRT_MIN_HEIGHT` px tall gets a CLIP image
-   embedding, which two classifiers use:
-   - **No shirt?** A small classifier *trained on labelled people from these cameras*
-     (`detector/shirt_probe.pt`) gives a no-shirt probability. At or above
-     `SHIRTLESS_THRESHOLD` (0.7) the person is flagged; flagged events bypass the cooldown
-     and show a red **NO SHIRT** toast. A tracked person is re-checked every 15 s.
-   - **Shirt colour:** white or black (people here only wear a white shirt, a black shirt,
-     or no shirt), shown on the person's box in the lightbox.
+   embedding. A small classifier *trained on labelled people from these cameras*
+   (`detector/shirt_probe.pt`) turns it into a no-shirt probability. At or above
+   `SHIRTLESS_THRESHOLD` (0.7) the person is flagged; flagged events bypass the cooldown
+   and show a red **NO SHIRT** toast. A tracked person is re-checked every 15 s.
 
 4. **Best shot:** for ~8 s after an event (`BEST_SHOT_SECONDS`) the detector checks every
    frame every `BEST_SHOT_INTERVAL` (0.5 s; frames are decoded at up to `DECODE_FPS`, 5 a second) and swaps in a frame where the same people are at least 20% sharper (measured
    by Laplacian variance), since people walking are often motion-blurred in the first frame.
 
-In the **Events** tab: filter by camera, date and type (*No shirt*, *White shirt*, *Black shirt* –
-events with at least one such person), click an event to see every detected person
-boxed (green = shirt, red = no shirt, with confidence; `B` toggles boxes). If an alert is
+In the **Events** tab: filter by camera, date and type (*No shirt* – events with
+at least one person without a shirt), click an event to see every detected person
+boxed (green = person, red = no shirt with confidence; `B` toggles boxes). If an alert is
 wrong press **Not shirtless**: it is unflagged and drops out of the "no shirt" count.
 The header shows today's events, today's no-shirt alerts, and an **AI** chip (green =
 detector running, red = offline; hover for per-camera status).
@@ -157,8 +154,7 @@ Each camera has its own settings: **what** to detect and **when** to capture.
 
 | Tick | Captures |
 |---|---|
-| **Person** | everyone, including people too far away to judge clothing (white/black shirt are then included automatically) |
-| **White shirt** / **Black shirt** | with *Person* unticked: only people wearing that |
+| **Person** | everyone, including people too far away to judge clothing |
 | **No shirt** | people without a shirt; also turns the red no-shirt alert on for this camera |
 
 E.g. *Person* unticked + *No shirt* ticked = the camera only records rule breakers. A person
@@ -213,13 +209,13 @@ pan. Thumbnails are cropped around the people at 480 px wide.
 the selection, so nothing hidden is affected.
 
 **Date/time range** – press **Date/time range…**, pick *From* / *To* (date and time, Bangkok
-time) and optionally a camera and type (no shirt / white / black). It shows how many events
+time) and optionally a camera and type (no shirt). It shows how many events
 and MB the range covers. Then **Download zip**, **Delete N** (one confirmation that repeats
 the exact range) or **Show in gallery**.
 
 Zips contain the full-size images in per-day folders, named
 `2026-10-11_19-30-01_CH3_noshirt_428.jpg`, plus `events.csv` (time, camera, type, number of
-people, shirt per person, no-shirt score) that opens in Excel. They are streamed, so even a
+people, no-shirt score) that opens in Excel. They are streamed, so even a
 whole day (~250 MB) starts downloading immediately.
 
 ## Login
@@ -326,7 +322,7 @@ rm -rf tests/data
 | `GET /api/schedule` / `PUT /api/schedule` | per-camera settings: schedule, detect, `zones` (polygons, 0–1 of the frame) |
 | `GET /api/cameras/{ch}/frame.jpg` | a current full-resolution frame (for drawing areas) |
 | `GET /api/status` | event-stream connected, last error, last event time, today's count |
-| `GET /api/events?channel=&start=&end=&before=&limit=&shirtless=&shirt=white\|black` | epoch seconds; newest first; page with `before=<last id>`; returns `has_more` |
+| `GET /api/events?channel=&start=&end=&before=&limit=&shirtless=` | epoch seconds; newest first; page with `before=<last id>`; returns `has_more` |
 | `DELETE /api/events/{id}` | delete event + files |
 | `POST /api/events/delete` | bulk delete, body `{"ids": [...]}` (max 1000) |
 | `GET /api/events/summary?start=&end=&channel=&type=` | count + MB for a range |

@@ -269,7 +269,6 @@ input[type=time] {
   display: flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
   border: 1px solid var(--border); background: var(--panel-2); font-weight: 600;
 }
-.detect label.implied { opacity: .5; }
 .detect input { width: 17px; height: 17px; }
 .detect .swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid #888; }
 .warn-text { color: var(--warn); font-size: 13px; }

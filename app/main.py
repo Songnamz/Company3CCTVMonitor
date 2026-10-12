@@ -4,7 +4,6 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Literal
 from datetime import datetime
 from urllib.parse import parse_qs, quote
 
@@ -342,9 +341,8 @@ async def api_events(
     before: int | None = None,
     limit: int = Query(50, ge=1, le=500),
     shirtless: bool | None = None,
-    shirt: Literal["white", "black"] | None = None,
 ):
-    rows, has_more = await asyncio.to_thread(db.list_events, channel, start, end, before, limit, shirtless, shirt)
+    rows, has_more = await asyncio.to_thread(db.list_events, channel, start, end, before, limit, shirtless)
     return {"events": [event_out(r) for r in rows], "has_more": has_more}
 
 
@@ -389,10 +387,8 @@ def parse_filters(data: dict) -> dict:
     kind = data.get("type") or ""
     if kind == "shirtless":
         f["shirtless"] = True
-    elif kind in ("white", "black"):
-        f["shirt"] = kind
     elif kind:
-        raise HTTPException(400, "type must be shirtless, white or black")
+        raise HTTPException(400, "type must be shirtless")
     if "ids" not in f and ("start" not in f or "end" not in f or f["end"] <= f["start"]):
         raise HTTPException(400, "choose a start and end time (end after start)")
     return f

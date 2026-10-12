@@ -6,8 +6,6 @@ Stored as JSON in the settings table:
                                   "start": "HH:MM", "end": "HH:MM"}],  # end <= start wraps midnight
                        "paused_until": epoch | null,                   # manual pause, overrides
                        "detect": {"person": bool,   # anyone (incl. people too far to judge clothing)
-                                  "white": bool,    # white shirt
-                                  "black": bool,    # black shirt
                                   "none": bool},    # no shirt (also enables the no-shirt alert)
                        "zones": [[[x, y], ...], ...]},  # detection areas, 0-1 of the frame; [] = whole view
                  "2": {...}}}
@@ -17,7 +15,7 @@ import re
 import time
 from datetime import datetime
 
-DETECT_KEYS = ("person", "white", "black", "none")
+DETECT_KEYS = ("person", "none")
 MAX_ZONES = 10
 MAX_ZONE_POINTS = 50
 _TIME = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -81,7 +79,9 @@ def validate(data: dict, channels: list[int]) -> dict:
                 raise ValueError(f"CH{key}: times must be HH:MM")
             rules.append({"days": days, "start": start, "end": end})
         paused = cam.get("paused_until")
-        detect = cam.get("detect") or {}
+        detect = dict(cam.get("detect") or {})
+        if detect.get("white") or detect.get("black"):  # old white/black shirt options: capture people
+            detect["person"] = True
         out["cameras"][str(key)] = {"enabled": bool(cam.get("enabled")), "rules": rules,
                                     "paused_until": float(paused) if paused else None,
                                     "detect": {k: bool(detect.get(k, True)) for k in DETECT_KEYS},

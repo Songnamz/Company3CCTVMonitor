@@ -77,19 +77,6 @@ STALL_SECONDS = 180
 # zero-shot prompts below are used instead (less accurate: ~3x more false alarms here).
 PROBE_PATH = os.getenv("SHIRT_PROBE", "/detector/shirt_probe.pt")
 
-# Shirt colour: people here wear a white shirt, a black shirt, or no shirt.
-WHITE_SHIRT = [
-    "a CCTV photo of a person wearing a white t-shirt",
-    "a CCTV photo of a person wearing a white shirt",
-    "a CCTV photo of a person in a white top",
-    "a CCTV photo of a person wearing a light grey t-shirt",
-]
-BLACK_SHIRT = [
-    "a CCTV photo of a person wearing a black t-shirt",
-    "a CCTV photo of a person wearing a black shirt",
-    "a CCTV photo of a person in a dark top",
-]
-
 # Zero-shot fallback. The shirtless probability is the softmax mass on NO_SHIRT.
 NO_SHIRT = [
     "a CCTV photo of a shirtless person",
@@ -120,10 +107,7 @@ class Models:
         with torch.no_grad():
             text = self.clip.encode_text(tokenizer(NO_SHIRT + SHIRT))
             self.text = text / text.norm(dim=-1, keepdim=True)
-            colour = self.clip.encode_text(tokenizer(WHITE_SHIRT + BLACK_SHIRT))
-            self.colour_text = colour / colour.norm(dim=-1, keepdim=True)
         self.n_pos = len(NO_SHIRT)
-        self.n_white = len(WHITE_SHIRT)
         self.probe = None
         if os.path.exists(PROBE_PATH):
             self.probe = torch.load(PROBE_PATH)
@@ -155,18 +139,15 @@ class Models:
         return (100.0 * feats @ self.text.T).softmax(dim=-1)[:, :self.n_pos].sum(-1)
 
     def judge(self, img: Image.Image, people: list[dict]) -> None:
-        """Set shirtless_score / shirtless / shirt ("none", "white", "black") on each person."""
+        """Set shirtless_score / shirtless on each person."""
         if not people:
             return
         feats = self.embed([self._crop(img, p["box"]) for p in people])
         with torch.no_grad():
             scores = self.shirtless_scores(feats)
-            colour = (100.0 * feats @ self.colour_text.T).softmax(dim=-1)
-        for p, score, col in zip(people, scores.tolist(), colour):
-            white = float(col[:self.n_white].sum())
+        for p, score in zip(people, scores.tolist()):
             p["shirtless_score"] = round(score, 3)
             p["shirtless"] = score >= SHIRTLESS_THRESHOLD
-            p["shirt"] = "none" if p["shirtless"] else ("white" if white >= 0.5 else "black")
 
     def analyze(self, img: Image.Image) -> list[dict]:
         """Detect + judge everyone (no tracking); used for testing."""
@@ -200,7 +181,6 @@ class Track:
     last_seen: float
     shirtless: bool = False
     score: float | None = None
-    shirt: str | None = None
     judged_at: float = float("-inf")
     matched: bool = False   # already reported as matching the camera's detect settings
 
@@ -296,11 +276,10 @@ def process_frame(models: Models, img: Image.Image, state: ChannelState, now: fl
             state.tracks.append(track)
             new_person = True
         if id(p) in judged:
-            track.score, track.shirt, track.judged_at = p["shirtless_score"], p.get("shirt"), now
+            track.score, track.judged_at = p["shirtless_score"], now
         elif track.score is not None:  # reuse the recent result for this person
             p["shirtless_score"] = track.score
             p["shirtless"] = track.score >= SHIRTLESS_THRESHOLD
-            p["shirt"] = track.shirt
         if p["shirtless"] and not track.shirtless:
             new_shirtless = track.shirtless = True
         track.box, track.last_seen = p["box"], now
@@ -390,14 +369,12 @@ class StreamReader(threading.Thread):
 
 # ---------------------------------------------------------------- main loop
 
-ALL_DETECT = {"person": True, "white": True, "black": True, "none": True}
+ALL_DETECT = {"person": True, "none": True}
 
 
 def matches(track: Track, detect: dict) -> bool:
     """Does this person match what the camera is set to detect?"""
-    if detect.get("person"):
-        return True
-    return track.shirt is not None and detect.get(track.shirt, False)
+    return bool(detect.get("person") or (detect.get("none") and track.shirtless))
 
 
 def post_event(client: httpx.Client, channel: int, ts: float, jpeg: bytes, people: list[dict], reason: str,
@@ -515,12 +492,7 @@ def main():
                         t.matched = True
                         new_match.append(t)
                 if new_shirtless or (new_match and ts - st.last_saved >= COOLDOWN_SECONDS):
-                    if new_shirtless:
-                        reason = "shirtless"
-                    elif det.get("person"):
-                        reason = "person"
-                    else:
-                        reason = " / ".join(sorted({f"{t.shirt} shirt" for t in new_match}))
+                    reason = "shirtless" if new_shirtless else "person"
                     event_id = send_event(client, outbox, {"channel": ch, "ts": ts, "jpeg": jpeg,
                                                            "people": people, "reason": reason})
                     st.last_saved = ts

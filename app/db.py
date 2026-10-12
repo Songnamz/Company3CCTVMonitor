@@ -64,15 +64,12 @@ class Database:
         return dict(row)
 
     @staticmethod
-    def _where(channel=None, start=None, end=None, before=None, shirtless=None, shirt=None,
+    def _where(channel=None, start=None, end=None, before=None, shirtless=None,
                ids=None) -> tuple[str, list]:
         where, args = [], []
         if ids is not None:
             where.append(f"id IN ({','.join('?' * len(ids))})")
             args.extend(ids)
-        if shirt is not None:  # at least one person wearing this ("white" / "black")
-            where.append("EXISTS (SELECT 1 FROM json_each(events.detections) WHERE json_extract(value, '$.shirt') = ?)")
-            args.append(shirt)
         if shirtless is not None:
             where.append("shirtless = ?")
             args.append(1 if shirtless else 0)
@@ -91,8 +88,8 @@ class Database:
         return (" WHERE " + " AND ".join(where)) if where else "", args
 
     def list_events(self, channel=None, start=None, end=None, before=None, limit=50,
-                    shirtless=None, shirt=None) -> tuple[list[dict], bool]:
-        where, args = self._where(channel, start, end, before, shirtless, shirt)
+                    shirtless=None) -> tuple[list[dict], bool]:
+        where, args = self._where(channel, start, end, before, shirtless)
         with self._lock:
             rows = [dict(r) for r in self._conn.execute(
                 f"SELECT * FROM events{where} ORDER BY id DESC LIMIT ?", [*args, limit + 1]).fetchall()]

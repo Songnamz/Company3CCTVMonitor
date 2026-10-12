@@ -2,7 +2,6 @@
 
 import csv
 import io
-import json
 import zipfile
 from datetime import datetime
 from typing import Iterator
@@ -60,15 +59,14 @@ class _StreamSink:
 def event_kind(row: dict) -> str:
     if row.get("shirtless"):
         return "noshirt"
-    shirts = sorted({d.get("shirt") for d in json.loads(row.get("detections") or "[]")} & {"white", "black"})
-    return "+".join(shirts) if shirts else row.get("code", "event").lower()
+    return row.get("code", "event").lower()
 
 
 def zip_events(rows: list[dict]) -> Iterator[bytes]:
     sink = _StreamSink()
     index = io.StringIO()
     writer = csv.writer(index)
-    writer.writerow(["file", "event_id", "time", "camera", "type", "people", "shirts", "no_shirt_score"])
+    writer.writerow(["file", "event_id", "time", "camera", "type", "people", "no_shirt_score"])
     with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED) as zf:   # JPEGs don't compress further
         for row in rows:
             path = safe_path(row.get("image"))
@@ -78,9 +76,8 @@ def zip_events(rows: list[dict]) -> Iterator[bytes]:
             kind = event_kind(row)
             name = f"{dt:%Y-%m-%d}/{dt:%Y-%m-%d_%H-%M-%S}_CH{row['channel']}_{kind}_{row['id']}.jpg"
             zf.write(path, name)
-            dets = json.loads(row.get("detections") or "[]")
             writer.writerow([name, row["id"], f"{dt:%Y-%m-%d %H:%M:%S}", f"CH{row['channel']}", kind,
-                             row.get("persons") or "", " ".join(d.get("shirt") or "?" for d in dets),
+                             row.get("persons") or "",
                              row.get("shirtless_score") if row.get("shirtless_score") is not None else ""])
             yield sink.drain()
         # UTF-8 BOM so Excel opens it with the right encoding.
