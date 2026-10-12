@@ -1,0 +1,91 @@
+name: cctvmonitor
+
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  go2rtc:
+    <<: *common
+    image: alexxit/go2rtc:1.9.10
+    env_file: .env
+    environment:
+      TZ: Asia/Bangkok
+    volumes:
+      - ./go2rtc/go2rtc.yaml:/config/go2rtc.yaml:ro
+    # no published ports: only nginx can reach it
+
+  app:
+    <<: *common
+    build: ./app
+    image: cctvmonitor-app
+    env_file: .env
+    environment:
+      TZ: Asia/Bangkok
+      DATA_DIR: /data
+      GO2RTC_URL: http://go2rtc:1984
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    volumes:
+      - ./data:/data
+    depends_on:
+      - go2rtc
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  detector:
+    <<: *common
+    build: ./detector
+    image: cctvmonitor-detector
+    environment:
+      TZ: Asia/Bangkok
+      GO2RTC_URL: http://go2rtc:1984
+      APP_URL: http://app:8000
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      CHANNELS: ${CHANNELS:-1,2,3,4}
+      DETECT_INTERVAL_SECONDS: ${DETECT_INTERVAL_SECONDS:-1}
+      PERSON_CONFIDENCE: ${PERSON_CONFIDENCE:-0.3}
+      PERSON_COOLDOWN_SECONDS: ${PERSON_COOLDOWN_SECONDS:-10}
+      ZONE_MIN_OVERLAP: ${ZONE_MIN_OVERLAP:-0.5}
+      SHIRTLESS_THRESHOLD: ${SHIRTLESS_THRESHOLD:-0.7}
+      PERSON_MIN_HEIGHT: ${PERSON_MIN_HEIGHT:-120}
+      SHIRT_MIN_HEIGHT: ${SHIRT_MIN_HEIGHT:-150}
+      AI_THREADS: ${AI_THREADS:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    cpus: ${AI_CPUS:-2}
+    # Unhealthy = main loop stalled; the detector then exits itself and restarts (Docker
+    # doesn't restart unhealthy containers on its own). This makes it visible in `ps`.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/detector-alive') > 60)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      app:
+        condition: service_healthy
+      go2rtc:
+        condition: service_started
+
+  nginx:
+    <<: *common
+    image: nginx:1.27-alpine
+    environment:
+      TZ: Asia/Bangkok
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      go2rtc:
+        condition: service_started

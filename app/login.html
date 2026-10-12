@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1014">
+  <meta name="robots" content="noindex">
+  <title>CCTV Login</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23e5484d'/%3E%3C/svg%3E">
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px;
+      background: #0e1014; color: #e6e8ec; font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    form {
+      width: 100%; max-width: 340px; padding: 28px 24px; border-radius: 14px;
+      background: #171a21; border: 1px solid #2a2f3a; display: flex; flex-direction: column; gap: 14px;
+    }
+    h1 { margin: 0 0 4px; font-size: 20px; letter-spacing: .06em; }
+    label { font-size: 13px; color: #8b93a3; }
+    input[type=password] {
+      width: 100%; margin-top: 6px; padding: 11px 12px; font: inherit; color: inherit;
+      background: #0e1014; border: 1px solid #2a2f3a; border-radius: 8px;
+    }
+    input[type=password]:focus { outline: none; border-color: #4f8cff; }
+    button {
+      padding: 11px; border: 0; border-radius: 8px; background: #4f8cff; color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .error { margin: 0; padding: 9px 12px; border-radius: 8px; background: rgba(229, 72, 77, .15); color: #ff8a8e; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <form method="post" action="/api/login">
+    <h1>CCTV</h1>
+    <p id="error" class="error" hidden></p>
+    <input type="text" name="username" value="cctv" autocomplete="username" hidden>
+    <label>Password
+      <input type="password" name="password" autocomplete="current-password" required autofocus>
+    </label>
+    <input type="hidden" name="next" id="next" value="/">
+    <button type="submit">Sign in</button>
+  </form>
+  <script>
+    const q = new URLSearchParams(location.search);
+    document.getElementById('next').value = q.get('next') || '/';
+    const err = q.get('error');
+    if (err) {
+      const box = document.getElementById('error');
+      box.textContent = err === 'locked'
+        ? 'Too many failed attempts. Try again in 15 minutes.'
+        : 'Wrong password.';
+      box.hidden = false;
+    }
+  </script>
+</body>
+</html>

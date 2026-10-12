@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1014">
+  <title>CCTV Monitor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23e5484d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="/stream/video-stream.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">CCTV</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="live" role="tab">Live</button>
+      <button class="tab" data-tab="events" role="tab">Events <span id="badge" class="badge" hidden>0</span></button>
+      <button class="tab" data-tab="settings" role="tab">Settings</button>
+    </nav>
+    <div id="status" class="status" title="Connecting…">
+      <span class="dot"></span>
+      <span><b id="today">–</b> today</span>
+      <span id="today-shirtless" class="shirtless-count" hidden title="No-shirt alerts today"></span>
+      <span id="capture-chip" class="capture-chip" hidden></span>
+      <span id="ai-status" class="ai-chip" title="AI detector">AI</span>
+    </div>
+    <form method="post" action="/api/logout" class="logout">
+      <button class="icon-btn" title="Log out" aria-label="Log out">⏻</button>
+    </form>
+  </header>
+
+  <main>
+    <section id="view-live" class="view active">
+      <div id="grid" class="grid"></div>
+      <p id="live-error" class="notice" hidden>Live player failed to load (go2rtc unavailable?).</p>
+    </section>
+
+    <section id="view-events" class="view">
+      <div class="filters">
+        <select id="f-channel" aria-label="Channel"><option value="">All channels</option></select>
+        <select id="f-type" aria-label="Type">
+          <option value="">All events</option>
+          <option value="shirtless">No shirt</option>
+          <option value="white">White shirt</option>
+          <option value="black">Black shirt</option>
+        </select>
+        <input id="f-date" type="date" aria-label="Date">
+        <button id="f-clear" class="btn ghost">Clear</button>
+        <button id="range-toggle" class="btn ghost range-toggle">Date/time range…</button>
+        <button id="sel-toggle" class="btn ghost">Select</button>
+      </div>
+      <div id="range-panel" class="range-panel" hidden>
+        <div class="range-fields">
+          <label>From <input id="r-start" type="datetime-local"></label>
+          <label>To <input id="r-end" type="datetime-local"></label>
+          <label>Camera <select id="r-channel"><option value="">All cameras</option></select></label>
+          <label>Type
+            <select id="r-type">
+              <option value="">All events</option>
+              <option value="shirtless">No shirt</option>
+              <option value="white">White shirt</option>
+              <option value="black">Black shirt</option>
+            </select>
+          </label>
+        </div>
+        <p id="r-summary" class="r-summary">Choose a time range.</p>
+        <div class="row">
+          <button id="r-show" class="btn" disabled>Show in gallery</button>
+          <button id="r-zip" class="btn primary" disabled>Download zip</button>
+          <button id="r-delete" class="btn danger" disabled>Delete</button>
+          <button id="r-close" class="btn ghost">Close</button>
+        </div>
+      </div>
+      <div id="sel-bar" class="sel-bar" hidden>
+        <span id="sel-count">0 selected</span>
+        <button id="sel-all" class="btn ghost">Select all</button>
+        <button id="sel-none" class="btn ghost">Clear</button>
+        <button id="sel-zip" class="btn primary" disabled>Download zip</button>
+        <button id="sel-delete" class="btn danger" disabled>Delete</button>
+        <button id="sel-done" class="btn">Done</button>
+        <span class="hint sel-hint">Tap images to select · Shift-click selects a range</span>
+      </div>
+      <div id="gallery" class="gallery"></div>
+      <p id="empty" class="notice" hidden>No events.</p>
+      <div class="more-wrap"><button id="more" class="btn" hidden>Load more</button></div>
+    </section>
+
+    <section id="view-settings" class="view">
+      <div class="sched">
+        <div class="panel">
+          <h2>All cameras</h2>
+          <p id="cap-state" class="cap-state">…</p>
+          <div class="row">
+            <button class="btn" data-pause-all="3600">Pause all 1 hour</button>
+            <button class="btn" data-pause-all="28800">Pause all 8 hours</button>
+            <button class="btn" data-pause-all="forever">Pause all until I resume</button>
+            <button class="btn primary" data-pause-all="resume">Resume all</button>
+          </div>
+          <p class="hint">Each camera has its own settings below: what to detect, and when. Times are Bangkok time. An end time earlier than
+            the start runs past midnight (22:00 → 06:00); the same start and end means the whole day.</p>
+        </div>
+        <div id="cam-scheds" class="sched"></div>
+        <div class="panel save-bar">
+          <button id="sch-save" class="btn primary">Save settings</button>
+          <span id="sch-msg" class="sch-msg"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="player" class="modal" hidden>
+    <div class="modal-bar">
+      <span id="player-title" class="modal-title"></span>
+      <button id="player-close" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="player-body" class="player-body"></div>
+  </div>
+
+  <div id="lightbox" class="modal" hidden>
+    <div class="modal-bar">
+      <span id="lb-title" class="modal-title"></span>
+      <button id="lb-boxes" class="btn ghost" title="Show/hide person boxes (B)">Boxes</button>
+      <button id="lb-notshirtless" class="btn" hidden title="This alert is wrong">Not shirtless</button>
+      <button id="lb-delete" class="btn danger">Delete</button>
+      <button id="lb-close" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <div class="lb-body">
+      <button id="lb-prev" class="nav prev" aria-label="Newer">‹</button>
+      <div id="lb-stage" class="lb-stage"><img id="lb-img" alt=""><div id="lb-overlay" class="lb-overlay"></div></div>
+      <div id="lb-noimg" class="noimg" hidden>No image</div>
+      <button id="lb-next" class="nav next" aria-label="Older">›</button>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <iframe name="dl-frame" id="dl-frame" hidden></iframe>
+</body>
+</html>

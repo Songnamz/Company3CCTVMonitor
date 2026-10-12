@@ -1,0 +1,19 @@
+# Synthetic test sources replacing the XVR RTSP streams.
+api:
+  listen: ":1984"
+  origin: "*"
+rtsp:
+  listen: "127.0.0.1:8554"   # ffmpeg exec sources publish back over RTSP (container-local only)
+webrtc:
+  listen: ""
+srtp:
+  listen: ""
+streams:
+  ch1: ffmpeg:virtual?video=testsrc&size=640x360#video=h264
+  ch2: ffmpeg:virtual?video=testsrc2&size=640x360#video=h264
+  ch3: ffmpeg:virtual?video=smptebars&size=640x360#video=h264
+  ch4: ffmpeg:virtual?video=rgbtestsrc&size=640x360#video=h264
+  ch1_hd: ffmpeg:virtual?video=testsrc&size=1280x720#video=h264
+  ch2_hd: ffmpeg:virtual?video=testsrc2&size=1280x720#video=h264
+  ch3_hd: ffmpeg:virtual?video=smptebars&size=1280x720#video=h264
+  ch4_hd: ffmpeg:virtual?video=rgbtestsrc&size=1280x720#video=h264

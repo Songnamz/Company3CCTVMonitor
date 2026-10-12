@@ -1,0 +1,39 @@
+# Isolated test stack: mock XVR + synthetic go2rtc sources. Never touches ./data or .env.
+#   docker compose -f docker-compose.yml -f tests/docker-compose.test.yml -p cctvtest up -d --build
+# Paths are relative to the project root (directory of the first compose file).
+name: cctvtest
+
+services:
+  mock-xvr:
+    image: cctvmonitor-app
+    command: ["python", "/mock/mock_xvr.py"]
+    volumes:
+      - ./tests/mock_xvr.py:/mock/mock_xvr.py:ro
+    ports:
+      - "127.0.0.1:18081:80"
+
+  go2rtc:
+    env_file: !reset []
+    volumes: !override
+      - ./tests/go2rtc.test.yaml:/config/go2rtc.yaml:ro
+
+  app:
+    env_file: !reset []
+    environment:
+      XVR_HOST: mock-xvr
+      XVR_HTTP_PORT: "80"
+      XVR_USER: admin
+      XVR_PASS: test123
+      CHANNELS: "1,2,3,4"
+      EVENT_CODES: FaceDetection
+      EVENT_COOLDOWN_SECONDS: "3"
+      RETENTION_DAYS: "30"
+      APP_PASSWORD: testpass
+    volumes: !override
+      - ./tests/data:/data
+    depends_on:
+      - mock-xvr
+
+  nginx:
+    ports: !override
+      - "127.0.0.1:18080:80"

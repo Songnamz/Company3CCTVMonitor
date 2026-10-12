@@ -1,0 +1,30 @@
+# go2rtc config. ${VARS} are substituted from the container environment (.env).
+# Only reachable inside the compose network; nginx exposes just the MSE websocket
+# and the player JS under /stream/.
+api:
+  listen: ":1984"
+  origin: "*"
+
+rtsp:
+  listen: ""      # RTSP server disabled
+
+webrtc:
+  listen: ""      # WebRTC disabled (UDP can't pass the Cloudflare tunnel; browsers use MSE)
+
+srtp:
+  listen: ""
+
+log:
+  level: info
+
+streams:
+  # Sub streams (grid)
+  ch1: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=1&subtype=1
+  ch2: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=2&subtype=1
+  ch3: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=3&subtype=1
+  ch4: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=4&subtype=1
+  # Main streams (fullscreen + snapshot fallback)
+  ch1_hd: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=1&subtype=0
+  ch2_hd: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=2&subtype=0
+  ch3_hd: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=3&subtype=0
+  ch4_hd: rtsp://${XVR_USER}:${XVR_PASS}@${XVR_HOST}:${XVR_RTSP_PORT:554}/cam/realmonitor?channel=4&subtype=0
