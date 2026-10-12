@@ -102,10 +102,9 @@
           <div class="row storage-fields">
             <label>Keep events for <input id="st-days" type="number" min="0" max="3650" step="1"> days</label>
             <label>Limit snapshots to <input id="st-gb" type="number" min="0" max="100000" step="1"> GB</label>
-            <button id="st-save" class="btn primary">Save</button>
-            <span id="st-msg" class="sch-msg"></span>
           </div>
-          <p class="hint">Older events are deleted automatically (checked every hour, and right after saving). When snapshots
+          <p class="hint">Older events are deleted automatically (checked every hour, and right after
+            saving). When snapshots
             go over the size limit, the oldest events are deleted until they fit. 0 turns a limit off.</p>
         </div>
         <div id="cam-scheds" class="sched"></div>

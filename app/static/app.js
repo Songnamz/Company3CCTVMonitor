@@ -17,6 +17,7 @@ const state = {
   selected: new Set(),
   lastSelected: -1,    // index of the last clicked card, for shift-click ranges
   draft: null,         // per-camera settings being edited in the Settings tab
+  storageDirty: false, // retention fields edited but not saved yet
   capture: null,       // latest per-camera capture status
   showBoxes: true,
   lbIndex: -1,
@@ -1020,6 +1021,7 @@ async function putSchedule(cameras) {
 
 async function saveSchedule() {
   try {
+    if (state.storageDirty) await saveStorage();
     await putSchedule(state.draft);
     state.draft = clone(state.schedule.cameras);
     renderSchedule(); // the editors must edit the new draft, not the one just saved
@@ -1061,35 +1063,27 @@ function renderStorage(s) {
   if (s.max_gb > 0 && s.max_gb * GB > room) $('#st-usage').textContent += ` · the limit is larger than the space left (${fmtGB(room)})`;
 }
 
-function setStMsg(text, err = false) {
-  const m = $('#st-msg');
-  m.textContent = text;
-  m.classList.toggle('err', err);
-}
-
 async function loadStorage() {
   try {
     renderStorage(await (await api('/api/storage')).json());
-    setStMsg('');
+    state.storageDirty = false;
   } catch (err) {
-    setStMsg(err.message, true);
+    $('#st-usage').textContent = `Could not load storage info: ${err.message}`;
   }
 }
 
+/** Saved by the shared "Save settings" button, only when the fields were edited. */
 async function saveStorage() {
   const body = { days: Number($('#st-days').value), max_gb: Number($('#st-gb').value) };
-  try {
-    const res = await api('/api/storage', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-    renderStorage(data);
-    setStMsg('Saved ✓ · cleaning up…');
-    setTimeout(loadStorage, 5000); // pick up the new usage once the cleanup run has finished
-  } catch (err) {
-    setStMsg(err.message, true);
-  }
+  const res = await api('/api/storage', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Storage: ${data.detail || `HTTP ${res.status}`}`);
+  renderStorage(data);
+  state.storageDirty = false;
+  // Pick up the new usage once the cleanup run has finished, unless the fields are being edited again.
+  setTimeout(() => { if (!state.storageDirty) loadStorage(); }, 5000);
 }
 
 function onNewEvent(ev) {
@@ -1173,8 +1167,7 @@ async function init() {
   stage.addEventListener('touchmove', (e) => { if (state.zoomed) { e.preventDefault(); panZoom(e); } }, { passive: false });
 
   $('#sch-save').addEventListener('click', saveSchedule);
-  $('#st-save').addEventListener('click', saveStorage);
-  ['#st-days', '#st-gb'].forEach((s) => $(s).addEventListener('input', () => setStMsg('Unsaved changes')));
+  ['#st-days', '#st-gb'].forEach((s) => $(s).addEventListener('input', () => { state.storageDirty = true; changed(); }));
   document.querySelectorAll('[data-pause-all]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.pauseAll;
     const ids = state.config.channels.map((c) => c.id);
