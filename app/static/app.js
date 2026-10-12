@@ -21,6 +21,7 @@ const state = {
   capture: null,       // latest per-camera capture status
   showBoxes: true,
   lbIndex: -1,
+  lbVideo: false,      // lightbox shows the event's video clip instead of the photo
   badge: 0,
   sseOnline: false,
   status: null,
@@ -256,11 +257,27 @@ function eventLabel(ev) {
   return ev.code;
 }
 
+const hasClip = (ev) => ev.clip_status === 'ok' && !!ev.clip;
+
+/** Corner badge: ▶ opens the video straight away; ⏳ while the XVR footage isn't fetched yet. */
+function videoBadge(ev) {
+  if (hasClip(ev)) {
+    return [el('span', { class: 'vid', title: 'Play video' }, '▶ Video')];
+  }
+  if (ev.clip_status === 'pending') {
+    return [el('span', { class: 'vid pending', title: 'The video is copied from the recorder about 2 minutes after the event' }, '⏳ Video')];
+  }
+  return [];
+}
+
 function card(ev, isNew = false) {
   const cls = `card${isNew ? ' new' : ''}${ev.shirtless ? ' shirtless' : ''}`;
   return el('button', { class: cls + (state.selected.has(ev.id) ? ' selected' : ''), 'data-id': ev.id,
-    onclick: (e) => (state.selecting ? toggleSelect(ev.id, e.shiftKey) : openLightbox(ev.id)) },
-    imgOrPlaceholder(ev.thumb),
+    onclick: (e) => {
+      if (state.selecting) toggleSelect(ev.id, e.shiftKey);
+      else openLightbox(ev.id, hasClip(ev) && e.target.classList.contains('vid'));
+    } },
+    el('div', { class: 'thumb' }, imgOrPlaceholder(ev.thumb), ...videoBadge(ev)),
     ...(ev.shirtless ? [el('span', { class: 'flag' }, 'NO SHIRT')] : []),
     ...(ev.persons > 1 ? [el('span', { class: 'people' }, `👤 ${ev.persons}`)] : []),
     el('div', { class: 'meta' },
@@ -527,21 +544,147 @@ function showRange() {
 
 /* ---------- lightbox ---------- */
 
-function openLightbox(id) {
+function openLightbox(id, video = false) {
   const i = state.events.findIndex((e) => e.id === id);
   if (i < 0) return;
+  state.lbVideo = video;
   $('#lightbox').hidden = false;
   showLightbox(i);
+}
+
+/*
+ * Clips are downloaded completely before they play. A 1080p clip needs ~5 Mbit/s; on a
+ * slower connection the player would otherwise stop to buffer again and again. Only one
+ * clip downloads at a time (stepping on cancels the previous one), and the last few stay
+ * in memory, so going back or replaying is instant.
+ */
+const CLIP_CACHE = 6;
+const PREFETCH_MS = 1500;   // photo shown this long -> start fetching its video
+const clips = new Map();    // clip url -> {blob, loaded, total, failed, abort}; oldest first
+let prefetchTimer = null;
+
+function fetchClip(url) {
+  let c = clips.get(url);
+  if (c && !c.aborted) {
+    clips.delete(url);
+    clips.set(url, c); // now the most recently used
+    return c;
+  }
+  for (const [u, o] of clips) {
+    if (!o.blob && !o.failed) { o.aborted = true; o.abort.abort(); clips.delete(u); }
+  }
+  const abort = new AbortController();
+  c = { blob: null, loaded: 0, total: 0, failed: false, aborted: false, abort };
+  clips.set(url, c);
+  (async () => {
+    const res = await api(url, { signal: abort.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    c.total = Number(res.headers.get('Content-Length')) || 0;
+    const reader = res.body.getReader();
+    const parts = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      c.loaded += value.length;
+      clipProgress(url);
+    }
+    c.blob = URL.createObjectURL(new Blob(parts, { type: 'video/mp4' }));
+  })().catch((err) => {
+    if (c.aborted) return;
+    c.failed = true; // play it streamed from the server instead
+    console.warn('clip download failed', url, err);
+  }).finally(() => { if (!c.aborted) clipProgress(url); });
+  const current = state.events[state.lbIndex]?.clip;
+  for (const [u, o] of clips) {
+    if (clips.size <= CLIP_CACHE) break;
+    if (u === url || u === current) continue;
+    if (o.blob) URL.revokeObjectURL(o.blob);
+    clips.delete(u);
+  }
+  return c;
+}
+
+function clipProgress(url) {
+  const ev = state.events[state.lbIndex];
+  if (!ev || ev.clip !== url || !state.lbVideo) return;
+  const c = clips.get(url);
+  if (c && (c.blob || c.failed)) { showLightbox(state.lbIndex); return; }
+  const mb = (b) => (b / 1e6).toFixed(1);
+  $('#lb-vidload').textContent = c && c.total
+    ? `Loading video… ${Math.floor((c.loaded / c.total) * 100)}% (${mb(c.loaded)} of ${mb(c.total)} MB)`
+    : `Loading video… ${mb(c ? c.loaded : 0)} MB`;
+}
+
+/** Play the clip from a few seconds before the event (nearby events share one clip). */
+function playClip(ev, c) {
+  const vid = $('#lb-vid');
+  const start = Math.max(0, (ev.clip_offset || 0) - (state.config.clip_before || 0));
+  const key = `${ev.clip}#t=${start.toFixed(1)}`;
+  if (vid.dataset.src === key) return; // already playing (e.g. the event was just updated)
+  vid.dataset.src = key;
+  if (c.blob) {
+    vid.addEventListener('loadedmetadata', () => { vid.currentTime = start; }, { once: true });
+    vid.src = c.blob;
+  } else {
+    vid.src = key;
+  }
+  vid.play().catch(() => {});
+}
+
+function stopClip() {
+  const vid = $('#lb-vid');
+  if (!vid.dataset.src) return;
+  vid.pause();
+  vid.removeAttribute('src');
+  delete vid.dataset.src;
+  vid.load();
+}
+
+function renderVideoButton(ev, showVideo) {
+  const btn = $('#lb-video');
+  btn.hidden = !ev.clip_status;
+  btn.disabled = !hasClip(ev);
+  if (hasClip(ev)) {
+    btn.textContent = showVideo ? '🖼 Photo' : '▶ Video';
+    btn.title = 'Switch between the photo and the video (V)';
+  } else if (ev.clip_status === 'pending') {
+    btn.textContent = '⏳ Video';
+    btn.title = 'The video is copied from the recorder about 2 minutes after the event';
+  } else {
+    btn.textContent = 'No video';
+    btn.title = 'The recorder had no footage for this moment';
+  }
+}
+
+function toggleVideo() {
+  const ev = state.events[state.lbIndex];
+  if (!ev || !hasClip(ev)) return;
+  state.lbVideo = !state.lbVideo;
+  showLightbox(state.lbIndex);
 }
 
 function showLightbox(i) {
   state.lbIndex = i;
   const ev = state.events[i];
   const img = $('#lb-img');
+  const wantVideo = state.lbVideo && hasClip(ev);
+  const c = wantVideo ? fetchClip(ev.clip) : null;
+  const showVideo = wantVideo && !!(c.blob || c.failed);
   setZoom(false);
-  $('#lb-stage').hidden = !ev.image;
-  $('#lb-noimg').hidden = !!ev.image;
+  renderVideoButton(ev, wantVideo);
+  $('#lb-vid').hidden = !showVideo;
+  $('#lb-stage').hidden = showVideo || !ev.image;
+  $('#lb-noimg').hidden = showVideo || !!ev.image;
+  $('#lb-vidload').hidden = !wantVideo || showVideo;  // the photo stays visible meanwhile
   $('#lb-overlay').innerHTML = '';
+  if (showVideo) playClip(ev, c);
+  else stopClip();
+  if (wantVideo && !showVideo) clipProgress(ev.clip);
+  clearTimeout(prefetchTimer);
+  if (!wantVideo && hasClip(ev)) {
+    prefetchTimer = setTimeout(() => { if (state.lbIndex === i && !$('#lightbox').hidden) fetchClip(ev.clip); }, PREFETCH_MS);
+  }
   if (ev.image) {
     img.onload = () => drawBoxes(ev, img);
     img.src = ev.image;
@@ -552,7 +695,7 @@ function showLightbox(i) {
   if (ev.reviewed) title += ' · reviewed';
   $('#lb-title').textContent = title;
   $('#lb-notshirtless').hidden = !ev.shirtless;
-  $('#lb-boxes').hidden = !ev.detections?.length;
+  $('#lb-boxes').hidden = showVideo || !ev.detections?.length;
   $('#lb-prev').disabled = i === 0;
   $('#lb-next').disabled = i >= state.events.length - 1 && !state.hasMore;
 }
@@ -618,6 +761,9 @@ async function lbNotShirtless() {
 
 function closeLightbox() {
   setZoom(false);
+  stopClip();
+  clearTimeout(prefetchTimer);
+  $('#lb-vidload').hidden = true;
   $('#lightbox').hidden = true;
   $('#lb-img').removeAttribute('src');
   state.lbIndex = -1;
@@ -1052,7 +1198,7 @@ function renderStorage(s) {
   $('#st-gb').value = s.max_gb;
   const parts = [`${s.events.toLocaleString()} events`];
   if (s.used_bytes != null) {
-    parts.push(s.max_gb > 0 ? `snapshots ${fmtGB(s.used_bytes)} of ${fmtGB(s.max_gb * GB)}` : `snapshots ${fmtGB(s.used_bytes)}`);
+    parts.push(s.max_gb > 0 ? `snapshots + videos ${fmtGB(s.used_bytes)} of ${fmtGB(s.max_gb * GB)}` : `snapshots + videos ${fmtGB(s.used_bytes)}`);
   }
   if (s.oldest_ts) parts.push(`oldest ${shortTime(s.oldest_ts)}`);
   parts.push(`disk free ${fmtGB(s.disk_free_bytes)} of ${fmtGB(s.disk_total_bytes)}`);
@@ -1161,6 +1307,7 @@ async function init() {
   $('#lb-next').addEventListener('click', () => lbStep(1));
   $('#lb-delete').addEventListener('click', lbDelete);
   $('#lb-boxes').addEventListener('click', toggleBoxes);
+  $('#lb-video').addEventListener('click', toggleVideo);
   const stage = $('#lb-stage');
   stage.addEventListener('click', (e) => setZoom(!state.zoomed, e));
   stage.addEventListener('mousemove', panZoom);
@@ -1182,6 +1329,7 @@ async function init() {
       else if (e.key === 'Escape') closeLightbox();
       else if (e.key === 'Delete') lbDelete();
       else if (e.key === 'b' || e.key === 'B') toggleBoxes();
+      else if (e.key === 'v' || e.key === 'V') toggleVideo();
     } else if (!$('#player').hidden && e.key === 'Escape') {
       closePlayer();
     } else if (state.selecting && e.key === 'Escape') {

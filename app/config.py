@@ -22,10 +22,24 @@ EVENT_COOLDOWN_SECONDS = float(os.getenv("EVENT_COOLDOWN_SECONDS", "3"))
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
 RETENTION_MAX_GB = float(os.getenv("RETENTION_MAX_GB", "200"))
 
+XVR_RTSP_PORT = int(os.getenv("XVR_RTSP_PORT", "554"))
+
+# Video clips: copied from the XVR's own recording, CLIP_BEFORE..CLIP_AFTER seconds around
+# each event. Events on one camera close together share one clip (at most CLIP_MAX_SECONDS).
+CLIPS_ENABLED = os.getenv("CLIPS_ENABLED", "true").lower() in ("1", "true", "yes")
+CLIP_BEFORE_SECONDS = float(os.getenv("CLIP_BEFORE_SECONDS", "5"))
+CLIP_AFTER_SECONDS = float(os.getenv("CLIP_AFTER_SECONDS", "5"))
+CLIP_MAX_SECONDS = 60
+# The XVR only serves footage once it is written to disk, roughly 100 s after it was filmed.
+CLIP_DELAY_SECONDS = float(os.getenv("CLIP_DELAY_SECONDS", "120"))
+CLIP_PARALLEL = 2
+CLIP_RETRY_SECONDS = (60, 300, 1800)  # after these retries a clip is marked failed
+
 GO2RTC_URL = os.getenv("GO2RTC_URL", "http://go2rtc:1984").rstrip("/")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
+CLIP_TMP_DIR = DATA_DIR / "clip-tmp"
 DB_PATH = DATA_DIR / "events.db"
 STATIC_DIR = Path(__file__).parent / "static"
 

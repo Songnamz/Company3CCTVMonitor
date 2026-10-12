@@ -101,11 +101,11 @@
           <p id="st-usage" class="cap-state">…</p>
           <div class="row storage-fields">
             <label>Keep events for <input id="st-days" type="number" min="0" max="3650" step="1"> days</label>
-            <label>Limit snapshots to <input id="st-gb" type="number" min="0" max="100000" step="1"> GB</label>
+            <label>Limit snapshots and videos to <input id="st-gb" type="number" min="0" max="100000" step="1"> GB</label>
           </div>
           <p class="hint">Older events are deleted automatically (checked every hour, and right after
             saving). When snapshots
-            go over the size limit, the oldest events are deleted until they fit. 0 turns a limit off.</p>
+            and videos go over the size limit, the oldest events are deleted until they fit. 0 turns a limit off.</p>
         </div>
         <div id="cam-scheds" class="sched"></div>
         <div class="panel save-bar">
@@ -127,6 +127,7 @@
   <div id="lightbox" class="modal" hidden>
     <div class="modal-bar">
       <span id="lb-title" class="modal-title"></span>
+      <button id="lb-video" class="btn primary" hidden title="Switch between the photo and the video (V)">▶ Video</button>
       <button id="lb-boxes" class="btn ghost" title="Show/hide person boxes (B)">Boxes</button>
       <button id="lb-notshirtless" class="btn" hidden title="This alert is wrong">Not shirtless</button>
       <button id="lb-delete" class="btn danger">Delete</button>
@@ -135,6 +136,8 @@
     <div class="lb-body">
       <button id="lb-prev" class="nav prev" aria-label="Newer">‹</button>
       <div id="lb-stage" class="lb-stage"><img id="lb-img" alt=""><div id="lb-overlay" class="lb-overlay"></div></div>
+      <video id="lb-vid" class="lb-vid" controls playsinline muted preload="auto" hidden></video>
+      <div id="lb-vidload" class="lb-vidload" hidden></div>
       <div id="lb-noimg" class="noimg" hidden>No image</div>
       <button id="lb-next" class="nav next" aria-label="Older">›</button>
     </div>

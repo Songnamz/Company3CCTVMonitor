@@ -29,6 +29,9 @@ MIGRATIONS = {
     "shirtless_score": "REAL",       # highest per-person score
     "detections": "TEXT",            # JSON list of {box, conf, shirtless_score, shirtless}
     "reviewed": "INTEGER DEFAULT 0", # 1 = a person marked the shirtless flag as wrong
+    "clip": "TEXT",                  # video file (relative path), may be shared by nearby events
+    "clip_start": "REAL",            # epoch time of the clip's first frame
+    "clip_status": "TEXT",           # pending / ok / failed; NULL = no video wanted
 }
 
 
@@ -49,16 +52,19 @@ class Database:
                 if col not in have:
                     self._conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_events_shirtless ON events(shirtless, id)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_events_clip_status ON events(clip_status)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_events_clip ON events(clip)")
 
     def insert_event(self, ts, channel, code, action, image, thumb, source, data,
-                     persons=None, shirtless=None, shirtless_score=None, detections=None) -> dict:
+                     persons=None, shirtless=None, shirtless_score=None, detections=None,
+                     clip_status=None) -> dict:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO events (ts, channel, code, action, image, thumb, source, data,"
-                " persons, shirtless, shirtless_score, detections)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " persons, shirtless, shirtless_score, detections, clip_status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ts, channel, code, action, image, thumb, source, data,
-                 persons, shirtless, shirtless_score, detections),
+                 persons, shirtless, shirtless_score, detections, clip_status),
             )
             row = self._conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
         return dict(row)
@@ -157,6 +163,25 @@ class Database:
                 (image, thumb, persons, shirtless, shirtless_score, detections, event_id))
             new = self._conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         return dict(old), dict(new)
+
+    def pending_clips(self) -> list[dict]:
+        """Events still waiting for their video clip, by channel and time."""
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(
+                "SELECT id, ts, channel FROM events WHERE clip_status = 'pending' ORDER BY channel, ts")]
+
+    def set_clip(self, ids: list[int], clip: str | None, clip_start: float | None, status: str) -> list[dict]:
+        """Store a clip (or a failure) on pending events; returns the rows that still exist."""
+        marks = ",".join("?" * len(ids))
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE events SET clip = ?, clip_start = ?, clip_status = ? WHERE id IN ({marks})",
+                (clip, clip_start, status, *ids))
+            return [dict(r) for r in self._conn.execute(f"SELECT * FROM events WHERE id IN ({marks})", ids)]
+
+    def clip_in_use(self, clip: str) -> bool:
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM events WHERE clip = ? LIMIT 1", (clip,)).fetchone() is not None
 
     def get_setting(self, key: str) -> str | None:
         with self._lock:

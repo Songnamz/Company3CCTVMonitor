@@ -1,4 +1,4 @@
-"""Stream a set of events as a zip: one JPEG per event plus an events.csv index."""
+"""Stream a set of events as a zip: one JPEG per event, their video clips, and an events.csv index."""
 
 import csv
 import io
@@ -66,8 +66,10 @@ def zip_events(rows: list[dict]) -> Iterator[bytes]:
     sink = _StreamSink()
     index = io.StringIO()
     writer = csv.writer(index)
-    writer.writerow(["file", "event_id", "time", "camera", "type", "people", "no_shirt_score"])
-    with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED) as zf:   # JPEGs don't compress further
+    writer.writerow(["file", "event_id", "time", "camera", "type", "people", "no_shirt_score",
+                     "video", "video_seconds_in"])
+    clips: dict[str, str] = {}  # clip path -> name in the zip (nearby events share a clip)
+    with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED) as zf:   # JPEGs/MP4s don't compress further
         for row in rows:
             path = safe_path(row.get("image"))
             if not path or not path.exists():
@@ -76,9 +78,18 @@ def zip_events(rows: list[dict]) -> Iterator[bytes]:
             kind = event_kind(row)
             name = f"{dt:%Y-%m-%d}/{dt:%Y-%m-%d_%H-%M-%S}_CH{row['channel']}_{kind}_{row['id']}.jpg"
             zf.write(path, name)
+            video = offset = ""
+            clip = safe_path(row.get("clip"))
+            if clip and clip.exists():
+                if row["clip"] not in clips:
+                    start = datetime.fromtimestamp(row["clip_start"])
+                    clips[row["clip"]] = f"{start:%Y-%m-%d}/{start:%Y-%m-%d_%H-%M-%S}_CH{row['channel']}_video_{row['id']}.mp4"
+                    zf.write(clip, clips[row["clip"]])
+                video, offset = clips[row["clip"]], f"{row['ts'] - row['clip_start']:.1f}"
             writer.writerow([name, row["id"], f"{dt:%Y-%m-%d %H:%M:%S}", f"CH{row['channel']}", kind,
                              row.get("persons") or "",
-                             row.get("shirtless_score") if row.get("shirtless_score") is not None else ""])
+                             row.get("shirtless_score") if row.get("shirtless_score") is not None else "",
+                             video, offset])
             yield sink.drain()
         # UTF-8 BOM so Excel opens it with the right encoding.
         zf.writestr("events.csv", "﻿" + index.getvalue())

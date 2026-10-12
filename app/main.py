@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from auth import COOKIE, Auth, LoginRequired, client_ip, is_https, safe_next
-from capture import Capturer, is_jpeg, people_thumbnail, remove_files, retention_loop, safe_path, store_files
+from capture import Capturer, event_bytes, is_jpeg, people_thumbnail, remove_files, retention_loop, store_files
+from clips import ClipFetcher
 from db import Database
 from export import zip_events
 from hub import Hub, sse
@@ -55,6 +56,10 @@ def event_out(row: dict) -> dict:
         "shirtless_score": row.get("shirtless_score"),
         "reviewed": bool(row.get("reviewed")),
         "detections": json.loads(detections) if detections else None,
+        "clip": f"/snapshots/{row['clip']}" if row.get("clip") else None,
+        # seconds into the clip where the event happened
+        "clip_offset": row["ts"] - row["clip_start"] if row.get("clip_start") is not None else None,
+        "clip_status": row.get("clip_status"),
     }
 
 
@@ -140,6 +145,16 @@ def on_retention_done(usage: dict) -> None:
 def on_saved(row: dict) -> None:
     hub.publish("event", event_out(row))
     schedule_status_broadcast()
+    if row.get("clip_status") == "pending":
+        clip_fetcher.wake.set()
+
+
+def on_clips(rows: list[dict]) -> None:
+    for row in rows:
+        hub.publish("updated", event_out(row))
+
+
+clip_fetcher = ClipFetcher(db, on_clips)
 
 
 async def status_watchdog() -> None:
@@ -163,6 +178,28 @@ async def status_watchdog() -> None:
             await broadcast_status()
 
 
+async def keep_live_warm(channel: int) -> None:
+    """Keep go2rtc connected to a camera's sub stream (the Live grid's), by reading and
+    discarding it (~0.35 Mbit/s). Otherwise go2rtc only connects to the XVR when someone
+    opens the Live page, and the tiles wait for that connection first."""
+    url = f"{config.GO2RTC_URL}/api/stream.mp4"
+    backoff = 5
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
+        while True:
+            started = time.monotonic()
+            try:
+                async with client.stream("GET", url, params={"src": f"ch{channel}"}) as resp:
+                    resp.raise_for_status()
+                    async for _ in resp.aiter_raw(1 << 16):
+                        pass
+            except Exception as exc:
+                log.debug("Live keep-alive CH%s: %s", channel, exc)
+            if time.monotonic() - started > 60:
+                backoff = 5
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     stream_status.changed = schedule_status_broadcast
@@ -179,14 +216,18 @@ async def lifespan(app: FastAPI):
             log.warning("Ignoring stored retention settings: %s", exc)
     capturer = Capturer(db, on_saved, lambda ch: schedule.capture_allowed(capture_schedule, ch)[0])
     listener = EventListener(stream_status, capturer.handle)
-    log.info("Channels=%s EventCodes=%s Cooldown=%ss Retention=%sd/%sGB XVR=%s",
+    log.info("Channels=%s EventCodes=%s Cooldown=%ss Retention=%sd/%sGB Clips=%s XVR=%s",
              config.CHANNELS, config.EVENT_CODES, config.EVENT_COOLDOWN_SECONDS,
-             retention["days"], retention["max_gb"], config.XVR_BASE)
+             retention["days"], retention["max_gb"],
+             f"-{config.CLIP_BEFORE_SECONDS:g}s..+{config.CLIP_AFTER_SECONDS:g}s" if config.CLIPS_ENABLED else "off",
+             config.XVR_BASE)
     tasks = [
         asyncio.create_task(listener.run(), name="event-stream"),
         asyncio.create_task(retention_loop(db, lambda: retention, retention_wake, on_retention_done),
                             name="retention"),
         asyncio.create_task(status_watchdog(), name="status-watchdog"),
+        asyncio.create_task(clip_fetcher.run(), name="clips"),
+        *(asyncio.create_task(keep_live_warm(c), name=f"live-warm-ch{c}") for c in config.CHANNELS),
     ]
     yield
     for t in tasks:
@@ -262,13 +303,14 @@ async def internal_detections(request: Request):
             await asyncio.to_thread(remove_files, {"image": image, "thumb": thumb_rel})
             return {"skipped": "event gone"}
         old, new = res
-        await asyncio.to_thread(remove_files, old)
+        await asyncio.to_thread(remove_files, old)  # without db: the event's clip stays
         log.info("Event #%s: replaced with a sharper frame (%s)", replace_id, meta.get("reason"))
         hub.publish("updated", event_out(new))
         return {"id": new["id"]}
     row = await asyncio.to_thread(
         db.insert_event, ts, channel, "Person", meta.get("reason"), image, thumb_rel, "ai", None,
-        len(people), int(shirtless), max(scores, default=None), json.dumps(people))
+        len(people), int(shirtless), max(scores, default=None), json.dumps(people),
+        "pending" if config.CLIPS_ENABLED else None)
     log.info("Saved event #%s channel=%s people=%d shirtless=%s", row["id"], channel, len(people), shirtless)
     on_saved(row)
     return {"id": row["id"]}
@@ -361,6 +403,7 @@ async def api_config():
         "tz": config.TZ_NAME,
         "utc_offset": int(offset.total_seconds()) if offset else 0,
         "event_codes": config.EVENT_CODES,
+        "clip_before": config.CLIP_BEFORE_SECONDS,
     }
 
 
@@ -405,7 +448,7 @@ async def api_delete_event(event_id: int):
     row = await asyncio.to_thread(db.delete_event, event_id)
     if not row:
         raise HTTPException(404, "event not found")
-    await asyncio.to_thread(remove_files, row)
+    await asyncio.to_thread(remove_files, row, db)
     hub.publish("deleted", {"id": event_id})
     await broadcast_status()
     return {"ok": True}
@@ -451,7 +494,7 @@ def parse_filters(data: dict) -> dict:
 async def delete_matching(**filters) -> dict:
     rows = await asyncio.to_thread(db.delete_events, **filters)
     for row in rows:
-        await asyncio.to_thread(remove_files, row)
+        await asyncio.to_thread(remove_files, row, db)
     deleted = [r["id"] for r in rows]
     log.info("Deleted %d events (%s)", len(deleted), {k: v for k, v in filters.items() if k != "ids"} or "selection")
     hub.publish("deleted_many", {"ids": deleted})
@@ -461,18 +504,12 @@ async def delete_matching(**filters) -> dict:
 
 @app.get("/api/events/summary")
 async def api_events_summary(request: Request):
-    """How many events (and how many MB of images) a date/time range covers."""
+    """How many events (and how many MB of images and clips) a date/time range covers."""
     f = parse_filters(dict(request.query_params))
 
     def summarise():
         rows = db.find_events(**f)
-        size = 0
-        for r in rows:
-            for key in ("image", "thumb"):
-                p = safe_path(r.get(key))
-                if p and p.exists():
-                    size += p.stat().st_size
-        return {"count": len(rows), "bytes": size,
+        return {"count": len(rows), "bytes": event_bytes(rows),
                 "first": rows[0]["ts"] if rows else None, "last": rows[-1]["ts"] if rows else None}
 
     return await asyncio.to_thread(summarise)

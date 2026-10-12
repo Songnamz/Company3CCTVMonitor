@@ -1,4 +1,4 @@
-"""Snapshot capture for face events, plus retention cleanup."""
+"""Snapshot capture for face events, plus retention cleanup of snapshots and video clips."""
 
 import asyncio
 import io
@@ -81,11 +81,39 @@ def safe_path(rel: str | None) -> Path | None:
     return path if path.is_relative_to(root) and path != root else None
 
 
-def remove_files(row: dict) -> None:
-    for key in ("image", "thumb"):
-        path = safe_path(row.get(key))
-        if path:
-            path.unlink(missing_ok=True)
+def _unlink(path: Path | None) -> int:
+    """Delete a file; returns the bytes freed."""
+    try:
+        size = path.stat().st_size
+        path.unlink()
+        return size
+    except (AttributeError, OSError):
+        return 0
+
+
+def remove_files(row: dict, db: Database | None = None) -> int:
+    """Delete an already-deleted event's files; returns the bytes freed. Its video clip is
+    only deleted (when `db` is given) once no other event shares it."""
+    freed = sum(_unlink(safe_path(row.get(key))) for key in ("image", "thumb"))
+    clip = row.get("clip")
+    if db and clip and not db.clip_in_use(clip):
+        freed += _unlink(safe_path(clip))
+    return freed
+
+
+def event_bytes(rows: list[dict]) -> int:
+    """Disk space the events' files take, counting each shared clip once."""
+    total, clips = 0, set()
+    for row in rows:
+        keys = ["image", "thumb"]
+        if row.get("clip") and row["clip"] not in clips:
+            clips.add(row["clip"])
+            keys.append("clip")
+        for key in keys:
+            path = safe_path(row.get(key))
+            if path and path.is_file():
+                total += path.stat().st_size
+    return total
 
 
 class Capturer:
@@ -163,7 +191,8 @@ class Capturer:
                 log.error("No snapshot available for channel %s; storing event without image", channel)
             data = json.dumps(ev.data) if ev.data is not None else None
             row = await asyncio.to_thread(
-                self.db.insert_event, ts, channel, ev.code, ev.action, image, thumb, source, data)
+                self.db.insert_event, ts, channel, ev.code, ev.action, image, thumb, source, data,
+                clip_status="pending" if config.CLIPS_ENABLED else None)
             log.info("Saved event #%s channel=%s code=%s source=%s in %.2fs",
                      row["id"], channel, ev.code, source, time.monotonic() - started)
             self.on_saved(row)
@@ -182,15 +211,15 @@ def _scan(root: Path) -> int:
 
 
 def run_retention(db: Database, days: int, max_bytes: int) -> dict:
-    """Delete events older than `days`, then the oldest events while snapshots exceed `max_bytes`.
-    0 turns either limit off. Returns the snapshot usage afterwards."""
+    """Delete events older than `days`, then the oldest events while snapshots and clips exceed
+    `max_bytes`. 0 turns either limit off. Returns the disk usage afterwards."""
     root = config.SNAPSHOT_DIR
     aged = orphans = trimmed = 0
     if days > 0:
         cutoff = time.time() - days * 86400
         rows = db.delete_older_than(cutoff)
         for row in rows:
-            remove_files(row)
+            remove_files(row, db)
         aged = len(rows)
         if root.exists():
             for path in root.rglob("*"):
@@ -199,30 +228,29 @@ def run_retention(db: Database, days: int, max_bytes: int) -> dict:
                     orphans += 1
     total = _scan(root)
     if max_bytes > 0 and total > max_bytes:
-        log.warning("Snapshots use %.1f GB, over the %.1f GB limit: deleting oldest events",
+        log.warning("Snapshots and clips use %.1f GB, over the %.1f GB limit: deleting oldest events",
                     total / 1e9, max_bytes / 1e9)
         while total > max_bytes:
             rows = db.oldest_events(500)
             if not rows:
                 break
-            ids = []
+            # Take just enough of the oldest events to get under the limit (estimated: a
+            # clip shared with a newer event is only freed once that one goes too).
+            batch, estimate = [], total
             for row in rows:
-                ids.append(row["id"])
-                for key in ("image", "thumb"):
-                    path = safe_path(row.get(key))
-                    if path and path.is_file():
-                        total -= path.stat().st_size
-                        path.unlink(missing_ok=True)
-                if total <= max_bytes:
+                batch.append(row)
+                estimate -= event_bytes([row])
+                if estimate <= max_bytes:
                     break
-            db.delete_events(ids=ids)
-            trimmed += len(ids)
+            db.delete_events(ids=[r["id"] for r in batch])
+            total -= sum(remove_files(row, db) for row in batch)
+            trimmed += len(batch)
     if root.exists():
         for dirpath, _, _ in os.walk(root, topdown=False):
             if Path(dirpath) != root and not os.listdir(dirpath):
                 os.rmdir(dirpath)
     log.info("Retention: removed %d events older than %d days, %d orphan files, %d events over the size limit; "
-             "snapshots now %.2f GB", aged, days, orphans, trimmed, total / 1e9)
+             "files now %.2f GB", aged, days, orphans, trimmed, total / 1e9)
     return {"used_bytes": total, "measured_at": time.time()}
 
 

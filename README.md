@@ -57,6 +57,9 @@ when not (hover for the error), **amber** when the browser lost its connection t
 | `EVENT_CODES` | `FaceDetection` | Comma-separated Dahua event codes; `All` for debugging |
 | `EVENT_COOLDOWN_SECONDS` | `3` | Minimum time between snapshots per channel |
 | `RETENTION_DAYS` | `30` | Events/files older than this are deleted every 6 h; `0` disables |
+| `CLIPS_ENABLED` | `true` | Save a video clip around each event (see *Video clips*) |
+| `CLIP_BEFORE_SECONDS` / `CLIP_AFTER_SECONDS` | `5` / `5` | Clip length before / after the event |
+| `CLIP_DELAY_SECONDS` | `120` | Wait this long after a clip's end before copying it from the XVR |
 | `APP_PASSWORD` | – | **Required.** Password for the web login page. Empty = nobody can log in |
 | `SESSION_DAYS` | `30` | How long a login stays valid |
 | `LOG_LEVEL` | `INFO` | `DEBUG` also logs heartbeats and full event payloads |
@@ -67,7 +70,7 @@ After editing `go2rtc/go2rtc.yaml` or `nginx/nginx.conf`: `docker compose restar
 ### Data
 
 Everything lives in `./data`: `events.db` (SQLite, WAL) and `snapshots/YYYY/MM/DD/*.jpg`
-(full image + `_thumb.jpg`). Back up that folder to back up everything.
+(full image + `_thumb.jpg`) and `*_clip.mp4` (video clips). Back up that folder to back up everything.
 
 ## Create a dedicated view-only XVR user
 
@@ -201,6 +204,22 @@ speeds indoors and at night. The cameras' shutter/exposure is not reachable thro
 XVR's API (only gain is); it can be set in the camera's own on-screen menu from the XVR's
 local monitor (*Camera → PTZ → Menu* on HDCVI cameras), if the cameras offer it. Click/tap an image in the event viewer to zoom 2.5× and move to
 pan. Thumbnails are cropped around the people at 480 px wide.
+
+## Video clips
+
+Each event also gets a short video, from 5 s before to 5 s after it (e.g. an event at
+21:10:10 gets 21:10:05–21:10:15). It is copied, unchanged (1080p H.264, ~0.5 MB/s), from the
+XVR's own recording over RTSP playback, so the XVR must be recording those cameras. The XVR
+only serves footage once it is written to its disk, about 100 s later, so the app copies a
+clip 2 minutes after the event; until then the card shows **⏳ Video**, then **▶ Video**.
+Events on one camera less than 10 s apart share one clip (up to 60 s long), and each plays
+it from its own moment.
+
+Click **▶ Video** on a card, or open an event and press **▶ Video** (or `V`) to switch
+between the photo and the video; ‹ › then steps through the videos. A clip the XVR could not
+deliver is retried after 1, 5 and 30 minutes, then shown as *No video*. Clips count towards
+the storage limit, and zips include them (`events.csv` lists each event's video and the
+second it happens at).
 
 ### Downloading and deleting many events
 
