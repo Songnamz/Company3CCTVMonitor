@@ -19,7 +19,7 @@ import config
 log = logging.getLogger("auth")
 
 COOKIE = "cctv_session"
-PUBLIC_PATHS = {"/login", "/api/login", "/healthz"}
+PUBLIC_PATHS = {"/login", "/api/login", "/healthz", "/logo.png"}
 
 FAIL_WINDOW = 15 * 60
 MAX_FAILS_PER_IP = 5

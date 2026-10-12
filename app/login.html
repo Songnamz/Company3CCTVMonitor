@@ -18,7 +18,7 @@
       width: 100%; max-width: 340px; padding: 28px 24px; border-radius: 14px;
       background: #171a21; border: 1px solid #2a2f3a; display: flex; flex-direction: column; gap: 14px;
     }
-    h1 { margin: 0 0 4px; font-size: 20px; letter-spacing: .06em; }
+    .logo { display: block; width: 120px; height: auto; margin: 0 auto 4px; }
     label { font-size: 13px; color: #8b93a3; }
     input[type=password] {
       width: 100%; margin-top: 6px; padding: 11px 12px; font: inherit; color: inherit;
@@ -33,7 +33,7 @@
 </head>
 <body>
   <form method="post" action="/api/login">
-    <h1>CCTV</h1>
+    <img class="logo" src="/logo.png" alt="CCTV">
     <p id="error" class="error" hidden></p>
     <input type="text" name="username" value="cctv" autocomplete="username" hidden>
     <label>Password

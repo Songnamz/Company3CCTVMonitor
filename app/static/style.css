@@ -36,7 +36,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .logout { margin: 0; }
 .logout .icon-btn { width: 32px; height: 32px; font-size: 15px; color: var(--muted); }
-.brand { font-weight: 700; letter-spacing: .08em; }
+.brand { flex: none; display: flex; align-items: center; }
+.brand img { display: block; height: 40px; width: auto; }
 .tabs { display: flex; gap: 4px; background: var(--panel); padding: 3px; border-radius: 9px; }
 .tab {
   position: relative; border: 0; background: none; padding: 6px 14px; border-radius: 7px; color: var(--muted);
