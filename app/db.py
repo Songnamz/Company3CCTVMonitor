@@ -124,6 +124,17 @@ class Database:
             self._conn.execute("DELETE FROM events WHERE ts < ?", (ts,))
         return rows
 
+    def oldest_events(self, limit: int) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(
+                "SELECT * FROM events ORDER BY ts LIMIT ?", (limit,)).fetchall()]
+
+    def stats(self) -> tuple[int, float | None]:
+        """(event count, oldest event ts)."""
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*), MIN(ts) FROM events").fetchone()
+        return row[0], row[1]
+
     def count_since(self, ts: float) -> tuple[int, int]:
         """(all events, shirtless events) since ts."""
         with self._lock:

@@ -250,6 +250,8 @@ input[type=time] {
   border-radius: 6px; padding: 5px 8px; font: inherit;
 }
 .rule .remove { margin-left: auto; }
+.storage-fields { gap: 12px 16px; }
+.storage-fields input { width: 90px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font: inherit; }
 .save-row { margin-top: 6px; }
 .save-bar { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; padding: 12px 16px; box-shadow: 0 -6px 18px rgba(0, 0, 0, .4); }
 .cam-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }

@@ -18,7 +18,9 @@ XVR_BASE = f"{XVR_SCHEME}://{XVR_HOST}:{XVR_HTTP_PORT}"
 CHANNELS = sorted({int(c) for c in _list("CHANNELS", "1,2,3,4")})
 EVENT_CODES = _list("EVENT_CODES", "FaceDetection")
 EVENT_COOLDOWN_SECONDS = float(os.getenv("EVENT_COOLDOWN_SECONDS", "3"))
+# Defaults only: once retention is saved from the Settings tab, the stored values win.
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
+RETENTION_MAX_GB = float(os.getenv("RETENTION_MAX_GB", "200"))
 
 GO2RTC_URL = os.getenv("GO2RTC_URL", "http://go2rtc:1984").rstrip("/")
 
@@ -41,4 +43,4 @@ HEARTBEAT_SECONDS = 5
 READ_TIMEOUT_SECONDS = 30
 MAX_BACKOFF_SECONDS = 60
 THUMB_WIDTH = 480
-RETENTION_INTERVAL_SECONDS = 6 * 3600
+RETENTION_INTERVAL_SECONDS = 3600

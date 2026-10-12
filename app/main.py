@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import logging
+import shutil
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -32,6 +33,9 @@ stream_status = StreamStatus()
 auth = Auth()
 detector = {"last_heartbeat": None, "info": None, "online": False}
 capture_schedule = schedule.default(config.CHANNELS)
+retention = {"days": config.RETENTION_DAYS, "max_gb": config.RETENTION_MAX_GB}
+storage_usage: dict = {"used_bytes": None, "measured_at": None}
+retention_wake = asyncio.Event()
 DETECTOR_TIMEOUT = 30
 
 
@@ -107,6 +111,32 @@ def schedule_status_broadcast() -> None:
     asyncio.get_running_loop().create_task(broadcast_status())
 
 
+def validate_retention(data) -> dict:
+    try:
+        days, max_gb = int(data["days"]), float(data["max_gb"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("days and max_gb must be numbers")
+    if not 0 <= days <= 3650:
+        raise ValueError("days must be between 0 and 3650")
+    if not 0 <= max_gb <= 100_000:
+        raise ValueError("max_gb must be between 0 and 100000")
+    if days == 0 and max_gb == 0:
+        raise ValueError("set at least one limit, or the disk will eventually fill up")
+    return {"days": days, "max_gb": max_gb}
+
+
+def _storage_sync() -> dict:
+    events, oldest = db.stats()
+    disk = shutil.disk_usage(config.DATA_DIR)
+    return {**retention, **storage_usage, "events": events, "oldest_ts": oldest,
+            "disk_total_bytes": disk.total, "disk_free_bytes": disk.free}
+
+
+def on_retention_done(usage: dict) -> None:
+    storage_usage.update(usage)
+    schedule_status_broadcast()  # counters may have dropped
+
+
 def on_saved(row: dict) -> None:
     hub.publish("event", event_out(row))
     schedule_status_broadcast()
@@ -141,14 +171,21 @@ async def lifespan(app: FastAPI):
         capture_schedule.update(schedule.validate(json.loads(stored), config.CHANNELS))
         if "cameras" not in json.loads(stored):  # saved in the old global format: store migrated
             await asyncio.to_thread(db.set_setting, "schedule", json.dumps(capture_schedule))
+    stored = await asyncio.to_thread(db.get_setting, "retention")
+    if stored:
+        try:
+            retention.update(validate_retention(json.loads(stored)))
+        except ValueError as exc:
+            log.warning("Ignoring stored retention settings: %s", exc)
     capturer = Capturer(db, on_saved, lambda ch: schedule.capture_allowed(capture_schedule, ch)[0])
     listener = EventListener(stream_status, capturer.handle)
-    log.info("Channels=%s EventCodes=%s Cooldown=%ss Retention=%sd XVR=%s",
+    log.info("Channels=%s EventCodes=%s Cooldown=%ss Retention=%sd/%sGB XVR=%s",
              config.CHANNELS, config.EVENT_CODES, config.EVENT_COOLDOWN_SECONDS,
-             config.RETENTION_DAYS, config.XVR_BASE)
+             retention["days"], retention["max_gb"], config.XVR_BASE)
     tasks = [
         asyncio.create_task(listener.run(), name="event-stream"),
-        asyncio.create_task(retention_loop(db, schedule_status_broadcast), name="retention"),
+        asyncio.create_task(retention_loop(db, lambda: retention, retention_wake, on_retention_done),
+                            name="retention"),
         asyncio.create_task(status_watchdog(), name="status-watchdog"),
     ]
     yield
@@ -324,8 +361,25 @@ async def api_config():
         "tz": config.TZ_NAME,
         "utc_offset": int(offset.total_seconds()) if offset else 0,
         "event_codes": config.EVENT_CODES,
-        "retention_days": config.RETENTION_DAYS,
     }
+
+
+@app.get("/api/storage")
+async def api_get_storage():
+    return await asyncio.to_thread(_storage_sync)
+
+
+@app.put("/api/storage")
+async def api_put_storage(request: Request):
+    try:
+        new = validate_retention(await request.json())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    retention.update(new)
+    await asyncio.to_thread(db.set_setting, "retention", json.dumps(new))
+    log.info("Retention updated: %s days, %s GB", new["days"], new["max_gb"])
+    retention_wake.set()  # apply now rather than at the next hourly run
+    return await asyncio.to_thread(_storage_sync)
 
 
 @app.get("/api/status")

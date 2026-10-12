@@ -171,32 +171,73 @@ class Capturer:
             log.exception("Capture failed for channel %s", channel)
 
 
-def run_retention(db: Database, days: int) -> None:
-    cutoff = time.time() - days * 86400
-    rows = db.delete_older_than(cutoff)
-    for row in rows:
-        remove_files(row)
-    orphans = 0
-    root = config.SNAPSHOT_DIR
+def _scan(root: Path) -> int:
+    """Total bytes of the files under root."""
+    total = 0
     if root.exists():
         for path in root.rglob("*"):
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-                orphans += 1
+            if path.is_file():
+                total += path.stat().st_size
+    return total
+
+
+def run_retention(db: Database, days: int, max_bytes: int) -> dict:
+    """Delete events older than `days`, then the oldest events while snapshots exceed `max_bytes`.
+    0 turns either limit off. Returns the snapshot usage afterwards."""
+    root = config.SNAPSHOT_DIR
+    aged = orphans = trimmed = 0
+    if days > 0:
+        cutoff = time.time() - days * 86400
+        rows = db.delete_older_than(cutoff)
+        for row in rows:
+            remove_files(row)
+        aged = len(rows)
+        if root.exists():
+            for path in root.rglob("*"):
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+                    orphans += 1
+    total = _scan(root)
+    if max_bytes > 0 and total > max_bytes:
+        log.warning("Snapshots use %.1f GB, over the %.1f GB limit: deleting oldest events",
+                    total / 1e9, max_bytes / 1e9)
+        while total > max_bytes:
+            rows = db.oldest_events(500)
+            if not rows:
+                break
+            ids = []
+            for row in rows:
+                ids.append(row["id"])
+                for key in ("image", "thumb"):
+                    path = safe_path(row.get(key))
+                    if path and path.is_file():
+                        total -= path.stat().st_size
+                        path.unlink(missing_ok=True)
+                if total <= max_bytes:
+                    break
+            db.delete_events(ids=ids)
+            trimmed += len(ids)
+    if root.exists():
         for dirpath, _, _ in os.walk(root, topdown=False):
             if Path(dirpath) != root and not os.listdir(dirpath):
                 os.rmdir(dirpath)
-    log.info("Retention: removed %d events and %d orphan files older than %d days", len(rows), orphans, days)
+    log.info("Retention: removed %d events older than %d days, %d orphan files, %d events over the size limit; "
+             "snapshots now %.2f GB", aged, days, orphans, trimmed, total / 1e9)
+    return {"used_bytes": total, "measured_at": time.time()}
 
 
-async def retention_loop(db: Database, on_change: Callable[[], None]) -> None:
-    if config.RETENTION_DAYS <= 0:
-        log.info("Retention disabled (RETENTION_DAYS=%s)", config.RETENTION_DAYS)
-        return
+async def retention_loop(db: Database, settings: Callable[[], dict], wake: asyncio.Event,
+                         on_done: Callable[[dict], None]) -> None:
+    """Runs retention every RETENTION_INTERVAL_SECONDS, or right away when `wake` is set."""
     while True:
+        wake.clear()
+        s = settings()
         try:
-            await asyncio.to_thread(run_retention, db, config.RETENTION_DAYS)
-            on_change()
+            usage = await asyncio.to_thread(run_retention, db, s["days"], int(s["max_gb"] * 1e9))
+            on_done(usage)
         except Exception:
             log.exception("Retention run failed")
-        await asyncio.sleep(config.RETENTION_INTERVAL_SECONDS)
+        try:
+            await asyncio.wait_for(wake.wait(), config.RETENTION_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            pass

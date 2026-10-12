@@ -96,6 +96,18 @@
           <p class="hint">Each camera has its own settings below: what to detect, and when. Times are Bangkok time. An end time earlier than
             the start runs past midnight (22:00 → 06:00); the same start and end means the whole day.</p>
         </div>
+        <div class="panel">
+          <h2>Storage</h2>
+          <p id="st-usage" class="cap-state">…</p>
+          <div class="row storage-fields">
+            <label>Keep events for <input id="st-days" type="number" min="0" max="3650" step="1"> days</label>
+            <label>Limit snapshots to <input id="st-gb" type="number" min="0" max="100000" step="1"> GB</label>
+            <button id="st-save" class="btn primary">Save</button>
+            <span id="st-msg" class="sch-msg"></span>
+          </div>
+          <p class="hint">Older events are deleted automatically (checked every hour, and right after saving). When snapshots
+            go over the size limit, the oldest events are deleted until they fit. 0 turns a limit off.</p>
+        </div>
         <div id="cam-scheds" class="sched"></div>
         <div class="panel save-bar">
           <button id="sch-save" class="btn primary">Save settings</button>

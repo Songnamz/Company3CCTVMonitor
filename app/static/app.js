@@ -85,6 +85,7 @@ function setTab(tab) {
       if (!state.loaded) loadEvents(true);
     } else if (tab === 'settings') {
       loadSchedule();
+      loadStorage();
     }
   }
 }
@@ -1039,6 +1040,58 @@ async function pauseCameras(ids, seconds) {
   try { await putSchedule(cameras); } catch (err) { setSchMsg(err.message, true); }
 }
 
+/* ---------- storage / retention ---------- */
+
+const GB = 1e9;
+const fmtGB = (b) => `${(b / GB).toFixed(b < 10 * GB ? 2 : 1)} GB`;
+
+function renderStorage(s) {
+  $('#st-days').value = s.days;
+  $('#st-gb').value = s.max_gb;
+  const parts = [`${s.events.toLocaleString()} events`];
+  if (s.used_bytes != null) {
+    parts.push(s.max_gb > 0 ? `snapshots ${fmtGB(s.used_bytes)} of ${fmtGB(s.max_gb * GB)}` : `snapshots ${fmtGB(s.used_bytes)}`);
+  }
+  if (s.oldest_ts) parts.push(`oldest ${shortTime(s.oldest_ts)}`);
+  parts.push(`disk free ${fmtGB(s.disk_free_bytes)} of ${fmtGB(s.disk_total_bytes)}`);
+  $('#st-usage').textContent = parts.join(' · ');
+  // Warn when the size limit can never be reached because the disk is smaller than it.
+  const room = s.disk_free_bytes + (s.used_bytes || 0);
+  $('#st-usage').classList.toggle('off', s.max_gb > 0 && s.max_gb * GB > room);
+  if (s.max_gb > 0 && s.max_gb * GB > room) $('#st-usage').textContent += ` · the limit is larger than the space left (${fmtGB(room)})`;
+}
+
+function setStMsg(text, err = false) {
+  const m = $('#st-msg');
+  m.textContent = text;
+  m.classList.toggle('err', err);
+}
+
+async function loadStorage() {
+  try {
+    renderStorage(await (await api('/api/storage')).json());
+    setStMsg('');
+  } catch (err) {
+    setStMsg(err.message, true);
+  }
+}
+
+async function saveStorage() {
+  const body = { days: Number($('#st-days').value), max_gb: Number($('#st-gb').value) };
+  try {
+    const res = await api('/api/storage', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    renderStorage(data);
+    setStMsg('Saved ✓ · cleaning up…');
+    setTimeout(loadStorage, 5000); // pick up the new usage once the cleanup run has finished
+  } catch (err) {
+    setStMsg(err.message, true);
+  }
+}
+
 function onNewEvent(ev) {
   toast(ev);
   flashTile(ev.channel);
@@ -1120,6 +1173,8 @@ async function init() {
   stage.addEventListener('touchmove', (e) => { if (state.zoomed) { e.preventDefault(); panZoom(e); } }, { passive: false });
 
   $('#sch-save').addEventListener('click', saveSchedule);
+  $('#st-save').addEventListener('click', saveStorage);
+  ['#st-days', '#st-gb'].forEach((s) => $(s).addEventListener('input', () => setStMsg('Unsaved changes')));
   document.querySelectorAll('[data-pause-all]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.pauseAll;
     const ids = state.config.channels.map((c) => c.id);
