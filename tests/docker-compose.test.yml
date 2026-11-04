@@ -29,6 +29,7 @@ services:
       EVENT_COOLDOWN_SECONDS: "3"
       RETENTION_DAYS: "30"
       APP_PASSWORD: testpass
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}   # the detector's (from .env), or the app rejects its posts
     volumes: !override
       - ./tests/data:/data
     depends_on:

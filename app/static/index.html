@@ -107,6 +107,34 @@
             saving). When snapshots
             and videos go over the size limit, the oldest events are deleted until they fit. 0 turns a limit off.</p>
         </div>
+        <div class="panel">
+          <h2>Cameras</h2>
+          <div id="cam-list" class="cam-list"></div>
+          <div class="row"><button id="cam-add" class="btn">+ Add camera</button></div>
+          <div id="cam-form" class="cam-form" hidden>
+            <h3 id="cam-form-title">Add camera</h3>
+            <div class="cam-fields">
+              <label>Name <input id="cf-name" maxlength="40" placeholder="e.g. Gate"></label>
+              <label>IP address <input id="cf-host" placeholder="192.168.1.7" autocomplete="off"></label>
+              <label>RTSP port <input id="cf-port" type="number" min="1" max="65535" value="554"></label>
+              <label>Username <input id="cf-user" autocomplete="off"></label>
+              <label>Password <input id="cf-pass" type="password" autocomplete="new-password"></label>
+              <label>Main stream (HD) <input id="cf-main" value="/stream1"></label>
+              <label>Sub stream (grid) <input id="cf-sub" value="/stream2"></label>
+            </div>
+            <p class="hint">TP-Link VIGI and Tapo: main <code>/stream1</code>, sub <code>/stream2</code>. On a Tapo,
+              the username and password are the <i>Camera Account</i> set in the Tapo app (Camera settings →
+              Advanced settings → Camera Account), not your TP-Link ID. Other brands: see the camera's RTSP manual.</p>
+            <div class="row">
+              <button id="cf-test" class="btn">Test connection</button>
+              <button id="cf-save" class="btn primary">Add camera</button>
+              <button id="cf-cancel" class="btn ghost">Cancel</button>
+            </div>
+            <div id="cf-result" class="cf-result"></div>
+          </div>
+          <p class="hint">Cameras added here are not on the XVR: live view, AI detection, schedules and areas work as
+            for the others. Their video clips come from a rolling 10-minute recording kept by this server.</p>
+        </div>
         <div id="cam-scheds" class="sched"></div>
         <div class="panel save-bar">
           <button id="sch-save" class="btn primary">Save settings</button>

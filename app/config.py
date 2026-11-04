@@ -40,6 +40,7 @@ GO2RTC_URL = os.getenv("GO2RTC_URL", "http://go2rtc:1984").rstrip("/")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
 CLIP_TMP_DIR = DATA_DIR / "clip-tmp"
+RING_DIR = DATA_DIR / "ring"  # rolling recordings of cameras not on the XVR
 DB_PATH = DATA_DIR / "events.db"
 STATIC_DIR = Path(__file__).parent / "static"
 

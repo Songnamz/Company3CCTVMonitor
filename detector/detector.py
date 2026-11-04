@@ -32,12 +32,14 @@ def env_float(name, default):
 GO2RTC_URL = os.getenv("GO2RTC_URL", "http://go2rtc:1984").rstrip("/")
 APP_URL = os.getenv("APP_URL", "http://app:8000").rstrip("/")
 INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN", "")
+# The XVR's channels; cameras added in the Settings tab arrive with the app's heartbeat reply.
 CHANNELS = sorted({int(c) for c in os.getenv("CHANNELS", "1,2,3,4").split(",") if c.strip()})
 SAMPLE_SECONDS = env_float("DETECT_INTERVAL_SECONDS", 1)
 # Frames a second decoded per camera: every SAMPLE_SECONDS one is analysed, and while
 # looking for a best shot as many as the CPU keeps up with.
 DECODE_FPS = env_float("DECODE_FPS", 5)
 PERSON_CONFIDENCE = env_float("PERSON_CONFIDENCE", 0.3)
+# Pixel sizes are for a 1080p frame; on other resolutions they are scaled (by frame height / 1080).
 PERSON_MIN_HEIGHT = int(os.getenv("PERSON_MIN_HEIGHT", "120"))     # px in the 1080p frame; smaller = far away
 SHIRTLESS_THRESHOLD = env_float("SHIRTLESS_THRESHOLD", 0.7)
 # Only judge clothing when enough of the body is visible: a head-only or tiny box
@@ -121,8 +123,9 @@ class Models:
         with self.lock, torch.no_grad():
             res = self.yolo.predict(img, classes=[0], conf=PERSON_CONFIDENCE, imgsz=YOLO_IMGSZ, verbose=False)[0]
         people = []
+        min_h = PERSON_MIN_HEIGHT * img.height / 1080
         for (x1, y1, x2, y2), conf in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist()):
-            if y2 - y1 >= PERSON_MIN_HEIGHT:
+            if y2 - y1 >= min_h:
                 people.append({"box": [round(x1), round(y1), round(x2), round(y2)], "conf": round(conf, 3),
                                "shirtless_score": None, "shirtless": False})
         return people
@@ -161,7 +164,7 @@ class Models:
         x1, y1, x2, y2 = box
         w, h = x2 - x1, y2 - y1
         inside = x1 > EDGE_MARGIN and y1 > EDGE_MARGIN and x2 < size[0] - EDGE_MARGIN
-        return inside and h >= SHIRT_MIN_HEIGHT and h >= SHIRT_MIN_ASPECT * w
+        return inside and h >= SHIRT_MIN_HEIGHT * size[1] / 1080 and h >= SHIRT_MIN_ASPECT * w
 
     @staticmethod
     def _crop(img: Image.Image, box) -> Image.Image:
@@ -305,7 +308,15 @@ class StreamReader(threading.Thread):
         self.frames = 0
         self.wanted = threading.Event()
         self.wanted.set()
+        self.stopped = False
         self.proc: subprocess.Popen | None = None
+
+    def stop(self) -> None:
+        """The camera was removed: end the thread."""
+        self.stopped = True
+        self.wanted.set()  # wake it if idle, so it can exit
+        if self.proc:
+            self.proc.kill()
 
     def set_wanted(self, on: bool) -> None:
         """Stop decoding a camera nobody analyses (saves CPU; go2rtc then stops pulling it)."""
@@ -322,6 +333,8 @@ class StreamReader(threading.Thread):
         backoff = 2
         while True:
             self.wanted.wait()
+            if self.stopped:
+                return
             started = time.time()
             cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
                    "-rw_timeout", "15000000", "-i", self.url, "-an",
@@ -337,6 +350,9 @@ class StreamReader(threading.Thread):
                 proc.kill()
                 err = proc.stderr.read().decode(errors="replace").strip().splitlines()
                 self.error = err[-1] if err else "stream ended"
+            if self.stopped:
+                log.info("CH%s removed, stream reader stopped", self.channel)
+                return
             if not self.wanted.is_set():
                 self.latest, self.error = None, None
                 log.info("CH%s not analysed, stream reader stopped", self.channel)
@@ -530,7 +546,19 @@ def main():
                 # its missing "active_channels" would turn on every camera, ignoring schedules.
                 r.raise_for_status()
                 reply = r.json()
-                now_active = set(reply.get("active_channels", CHANNELS))
+                channels = set(reply.get("channels", CHANNELS))
+                for c in channels - set(readers):
+                    log.info("CH%s added", c)
+                    readers[c] = StreamReader(c)
+                    readers[c].start()
+                    states[c], last_done[c] = ChannelState(), 0.0
+                    detect[c], zones[c] = dict(ALL_DETECT), []
+                for c in set(readers) - channels:
+                    log.info("CH%s removed", c)
+                    readers.pop(c).stop()
+                    for d in (states, last_done, detect, zones):
+                        d.pop(c, None)
+                now_active = set(reply.get("active_channels", CHANNELS)) & channels
                 for c, d in (reply.get("detect") or {}).items():
                     if int(c) in detect and d != detect[int(c)]:
                         log.info("CH%s detect: %s", c, "+".join(k for k, on in d.items() if on) or "nothing")
@@ -541,7 +569,7 @@ def main():
                         log.info("CH%s detection areas: %s", c, len(z) or "whole view")
                         zones[int(c)] = z
                         states[int(c)] = ChannelState()
-                for ch in active - now_active:
+                for ch in (active - now_active) & channels:
                     states[ch] = ChannelState()  # start fresh when capture resumes
                 if now_active != active:
                     log.info("Capture schedule: analysing channels %s", sorted(now_active) or "none")

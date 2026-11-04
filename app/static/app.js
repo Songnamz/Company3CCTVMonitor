@@ -88,6 +88,7 @@ function setTab(tab) {
     } else if (tab === 'settings') {
       loadSchedule();
       loadStorage();
+      loadCameras();
     }
   }
 }
@@ -1232,6 +1233,152 @@ async function saveStorage() {
   setTimeout(() => { if (!state.storageDirty) loadStorage(); }, 5000);
 }
 
+/* ---------- added (non-XVR) cameras ---------- */
+
+let camEditing = null; // the camera being edited, or null when adding one
+const CODECS = { h264: 'H.264', hevc: 'H.265' };
+
+async function loadCameras() {
+  let data;
+  try {
+    data = await (await api('/api/cameras')).json();
+  } catch (err) {
+    $('#cam-list').textContent = `Could not load cameras: ${err.message}`;
+    return;
+  }
+  const list = $('#cam-list');
+  list.innerHTML = '';
+  if (data.xvr_channels.length) {
+    list.append(el('div', { class: 'cam-item' }, el('b', {}, data.xvr_channels.map((c) => `CH${c}`).join(', ')),
+      el('span', { class: 'cam-where' }, 'on the XVR')));
+  }
+  for (const cam of data.cameras) {
+    list.append(el('div', { class: 'cam-item' },
+      el('b', {}, channelName(cam.id)),
+      el('span', { class: 'cam-where' }, `${cam.user ? `${cam.user}@` : ''}${cam.host}:${cam.port} · ${cam.main} · ${cam.sub}`),
+      el('button', { class: 'btn ghost', onclick: () => openCamForm(cam) }, 'Edit'),
+      el('button', { class: 'btn danger', onclick: () => removeCamera(cam) }, 'Remove')));
+  }
+}
+
+const CAM_FIELDS = { name: '#cf-name', host: '#cf-host', port: '#cf-port', user: '#cf-user', main: '#cf-main', sub: '#cf-sub' };
+
+function openCamForm(cam = null) {
+  camEditing = cam;
+  const defaults = { name: '', host: '', port: 554, user: 'admin', main: '/stream1', sub: '/stream2' };
+  for (const [k, sel] of Object.entries(CAM_FIELDS)) $(sel).value = (cam || defaults)[k];
+  $('#cf-pass').value = '';
+  $('#cf-pass').placeholder = cam?.has_password ? 'unchanged' : '';
+  $('#cam-form-title').textContent = cam ? `Edit ${channelName(cam.id)}` : 'Add camera';
+  $('#cf-save').textContent = cam ? 'Save camera' : 'Add camera';
+  $('#cf-result').innerHTML = '';
+  $('#cam-form').hidden = false;
+  $('#cf-host').focus();
+}
+
+function camFormData() {
+  const d = {};
+  for (const [k, sel] of Object.entries(CAM_FIELDS)) d[k] = $(sel).value.trim();
+  d.port = Number(d.port) || 554;
+  d.password = $('#cf-pass').value;
+  if (camEditing) d.id = camEditing.id;
+  return d;
+}
+
+function camResult(...lines) {
+  const box = $('#cf-result');
+  box.innerHTML = '';
+  for (const [cls, text] of lines) box.append(el('div', { class: cls }, text));
+}
+
+async function testCamera() {
+  const btn = $('#cf-test');
+  btn.disabled = true;
+  camResult(['', 'Connecting to the camera…']);
+  try {
+    const res = await api('/api/cameras/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(camFormData()),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    const lines = [];
+    for (const [key, label] of [['main', 'Main stream'], ['sub', 'Sub stream']]) {
+      const r = data[key];
+      lines.push(r.ok
+        ? ['ok', `${label}: ✓ ${CODECS[r.codec] || r.codec} ${r.width}×${r.height}${r.fps ? ` ${r.fps} fps` : ''}`]
+        : ['bad', `${label}: ✗ ${r.error}`]);
+    }
+    if (['main', 'sub'].some((k) => data[k].ok && data[k].codec === 'hevc')) {
+      lines.push(['warn-text', 'H.265 can\'t be played by most browsers (live view and videos stay black, e.g. Chrome/Firefox on a PC). '
+        + 'In the camera\'s own settings set the video encoding to H.264.']);
+    }
+    camResult(...lines);
+  } catch (err) {
+    camResult(['bad', err.message]);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveCamera() {
+  const btn = $('#cf-save');
+  btn.disabled = true;
+  camResult(['', 'Connecting to the camera…']);
+  try {
+    const res = await api(camEditing ? `/api/cameras/${camEditing.id}` : '/api/cameras', {
+      method: camEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(camFormData()),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    $('#cam-form').hidden = true;
+    await refreshConfig();
+    setSchMsg(`${channelName(data.id)} ${camEditing ? 'saved' : 'added'} ✓`);
+  } catch (err) {
+    camResult(['bad', err.message]);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeCamera(cam) {
+  if (!confirm(`Remove ${channelName(cam.id)} (${cam.host})? Its events stay until you delete them.`)) return;
+  const res = await api(`/api/cameras/${cam.id}`, { method: 'DELETE' });
+  if (!res.ok) { setSchMsg((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`, true); return; }
+  if (camEditing?.id === cam.id) $('#cam-form').hidden = true;
+  await refreshConfig();
+}
+
+function fillChannelSelects() {
+  for (const sel of [$('#f-channel'), $('#r-channel')]) {
+    const value = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
+    for (const ch of state.config.channels) sel.append(el('option', { value: ch.id }, ch.name));
+    sel.value = [...sel.options].some((o) => o.value === value) ? value : '';
+  }
+}
+
+/** The camera list changed (here or in another browser): rebuild everything that lists cameras. */
+async function refreshConfig() {
+  state.config = await (await api('/api/config')).json();
+  fillChannelSelects();
+  stopGrid();
+  buildGrid();
+  layoutGrid();
+  startGrid();
+  if (state.tab === 'settings') {
+    // Keep unsaved edits of the cameras that are still there.
+    const sch = await (await api('/api/schedule')).json();
+    state.schedule = sch;
+    const draft = {};
+    for (const ch of state.config.channels) draft[ch.id] = state.draft?.[ch.id] || clone(sch.cameras[ch.id]);
+    state.draft = draft;
+    renderSchedule();
+    renderCapture(sch.capture);
+    loadCameras();
+  }
+}
+
 function onNewEvent(ev) {
   toast(ev);
   flashTile(ev.channel);
@@ -1264,6 +1411,9 @@ function connectSSE() {
   es.addEventListener('deleted', (e) => removeEvent(JSON.parse(e.data).id));
   es.addEventListener('updated', (e) => updateEvent(JSON.parse(e.data)));
   es.addEventListener('deleted_many', (e) => JSON.parse(e.data).ids.forEach(removeEvent));
+  es.addEventListener('cameras', (e) => {
+    if (JSON.stringify(JSON.parse(e.data).channels) !== JSON.stringify(state.config.channels)) refreshConfig();
+  });
 }
 
 /* ---------- init ---------- */
@@ -1273,7 +1423,7 @@ async function init() {
   initFormatters(state.config.tz);
 
   const sel = $('#f-channel');
-  for (const ch of state.config.channels) sel.append(el('option', { value: ch.id }, ch.name));
+  fillChannelSelects();
 
   document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
   sel.addEventListener('change', () => { state.filter.channel = sel.value; loadEvents(true); });
@@ -1293,7 +1443,6 @@ async function init() {
   $('#sel-none').addEventListener('click', () => { [...state.selected].forEach((id) => setSelected(id, false)); renderSelection(); });
   $('#sel-delete').addEventListener('click', deleteSelected);
   $('#sel-zip').addEventListener('click', () => downloadZip({ ids: [...state.selected].join(',') }));
-  for (const ch of state.config.channels) $('#r-channel').append(el('option', { value: ch.id }, ch.name));
   $('#range-toggle').addEventListener('click', openRange);
   $('#r-close').addEventListener('click', () => { $('#range-panel').hidden = true; });
   ['#r-start', '#r-end', '#r-channel', '#r-type'].forEach((s) => $(s).addEventListener('change', updateRangeSummary));
@@ -1314,6 +1463,10 @@ async function init() {
   stage.addEventListener('touchmove', (e) => { if (state.zoomed) { e.preventDefault(); panZoom(e); } }, { passive: false });
 
   $('#sch-save').addEventListener('click', saveSchedule);
+  $('#cam-add').addEventListener('click', () => openCamForm());
+  $('#cf-test').addEventListener('click', testCamera);
+  $('#cf-save').addEventListener('click', saveCamera);
+  $('#cf-cancel').addEventListener('click', () => { $('#cam-form').hidden = true; });
   ['#st-days', '#st-gb'].forEach((s) => $(s).addEventListener('input', () => { state.storageDirty = true; changed(); }));
   document.querySelectorAll('[data-pause-all]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.pauseAll;

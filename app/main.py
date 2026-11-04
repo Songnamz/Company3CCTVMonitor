@@ -15,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from auth import COOKIE, Auth, LoginRequired, client_ip, is_https, safe_next
+import cameras as cams
 from capture import Capturer, event_bytes, is_jpeg, people_thumbnail, remove_files, retention_loop, store_files
-from clips import ClipFetcher
+from clips import ClipFetcher, RingRecorder, ring_dir
 from db import Database
 from export import zip_events
 from hub import Hub, sse
@@ -33,6 +34,7 @@ hub = Hub()
 stream_status = StreamStatus()
 auth = Auth()
 detector = {"last_heartbeat": None, "info": None, "online": False}
+cameras = cams.Cameras(db)
 capture_schedule = schedule.default(config.CHANNELS)
 retention = {"days": config.RETENTION_DAYS, "max_gb": config.RETENTION_MAX_GB}
 storage_usage: dict = {"used_bytes": None, "measured_at": None}
@@ -79,13 +81,13 @@ def detector_status() -> dict:
 
 def capture_status() -> dict:
     now = time.time()
-    cameras = {}
-    for c in config.CHANNELS:
+    out = {}
+    for c in cameras.channels():
         active, reason = schedule.capture_allowed(capture_schedule, c, now)
-        paused = capture_schedule["cameras"][str(c)].get("paused_until")
-        cameras[str(c)] = {"active": active, "reason": reason,
-                           "paused_until": paused if paused and paused > now else None}
-    return {"active_channels": [c for c in config.CHANNELS if cameras[str(c)]["active"]], "cameras": cameras}
+        paused = capture_schedule["cameras"].get(str(c), {}).get("paused_until")
+        out[str(c)] = {"active": active, "reason": reason,
+                       "paused_until": paused if paused and paused > now else None}
+    return {"active_channels": [c for c in cameras.channels() if out[str(c)]["active"]], "cameras": out}
 
 
 def _status_sync() -> dict:
@@ -154,7 +156,7 @@ def on_clips(rows: list[dict]) -> None:
         hub.publish("updated", event_out(row))
 
 
-clip_fetcher = ClipFetcher(db, on_clips)
+clip_fetcher = ClipFetcher(db, on_clips, cameras.ids)
 
 
 async def status_watchdog() -> None:
@@ -180,7 +182,7 @@ async def status_watchdog() -> None:
 
 async def keep_live_warm(channel: int) -> None:
     """Keep go2rtc connected to a camera's sub stream (the Live grid's), by reading and
-    discarding it (~0.35 Mbit/s). Otherwise go2rtc only connects to the XVR when someone
+    discarding it (~0.35 Mbit/s). Otherwise go2rtc only connects to the camera when someone
     opens the Live page, and the tiles wait for that connection first."""
     url = f"{config.GO2RTC_URL}/api/stream.mp4"
     backoff = 5
@@ -200,12 +202,43 @@ async def keep_live_warm(channel: int) -> None:
             backoff = min(backoff * 2, 60)
 
 
+camera_tasks: dict[str, asyncio.Task] = {}  # "live-5" / "record-5" -> task
+
+
+def start_camera_tasks() -> list[asyncio.Task]:
+    """Live keep-alive for every camera, plus a rolling recording (for clips) of each added camera.
+    Returns the tasks of removed cameras, cancelled."""
+    wanted = {f"live-{c}": lambda c=c: keep_live_warm(c) for c in cameras.channels()}
+    if config.CLIPS_ENABLED:
+        wanted |= {f"record-{c}": lambda c=c: RingRecorder(c).run() for c in cameras.ids()}
+    stopped = [camera_tasks.pop(n) for n in list(camera_tasks) if n not in wanted]
+    for task in stopped:
+        task.cancel()
+    for name, make in wanted.items():
+        if name not in camera_tasks:
+            camera_tasks[name] = asyncio.create_task(make(), name=name)
+    return stopped
+
+
+async def cameras_changed() -> None:
+    """After a camera was added or removed: settings, streams and tasks follow the new list."""
+    new = schedule.validate(capture_schedule, cameras.channels())
+    capture_schedule.clear()
+    capture_schedule.update(new)
+    await asyncio.to_thread(db.set_setting, "schedule", json.dumps(new))
+    await asyncio.gather(*start_camera_tasks(), return_exceptions=True)
+    hub.publish("cameras", {"channels": channel_list()})
+    await broadcast_status()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     stream_status.changed = schedule_status_broadcast
+    await asyncio.to_thread(cameras.load)
+    capture_schedule.update(schedule.default(cameras.channels()))
     stored = await asyncio.to_thread(db.get_setting, "schedule")
     if stored:
-        capture_schedule.update(schedule.validate(json.loads(stored), config.CHANNELS))
+        capture_schedule.update(schedule.validate(json.loads(stored), cameras.channels()))
         if "cameras" not in json.loads(stored):  # saved in the old global format: store migrated
             await asyncio.to_thread(db.set_setting, "schedule", json.dumps(capture_schedule))
     stored = await asyncio.to_thread(db.get_setting, "retention")
@@ -216,8 +249,9 @@ async def lifespan(app: FastAPI):
             log.warning("Ignoring stored retention settings: %s", exc)
     capturer = Capturer(db, on_saved, lambda ch: schedule.capture_allowed(capture_schedule, ch)[0])
     listener = EventListener(stream_status, capturer.handle)
-    log.info("Channels=%s EventCodes=%s Cooldown=%ss Retention=%sd/%sGB Clips=%s XVR=%s",
-             config.CHANNELS, config.EVENT_CODES, config.EVENT_COOLDOWN_SECONDS,
+    log.info("Channels=%s Added cameras=%s EventCodes=%s Cooldown=%ss Retention=%sd/%sGB Clips=%s XVR=%s",
+             config.CHANNELS, [f"CH{c['id']} {c['host']}" for c in cameras.items],
+             config.EVENT_CODES, config.EVENT_COOLDOWN_SECONDS,
              retention["days"], retention["max_gb"],
              f"-{config.CLIP_BEFORE_SECONDS:g}s..+{config.CLIP_AFTER_SECONDS:g}s" if config.CLIPS_ENABLED else "off",
              config.XVR_BASE)
@@ -227,12 +261,13 @@ async def lifespan(app: FastAPI):
                             name="retention"),
         asyncio.create_task(status_watchdog(), name="status-watchdog"),
         asyncio.create_task(clip_fetcher.run(), name="clips"),
-        *(asyncio.create_task(keep_live_warm(c), name=f"live-warm-ch{c}") for c in config.CHANNELS),
+        asyncio.create_task(cameras.sync_loop(), name="camera-sync"),
     ]
+    start_camera_tasks()
     yield
-    for t in tasks:
+    for t in [*tasks, *camera_tasks.values()]:
         t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*tasks, *camera_tasks.values(), return_exceptions=True)
     await capturer.close()
 
 
@@ -287,6 +322,8 @@ async def internal_detections(request: Request):
     jpeg = await request.body()
     channel, ts, people = int(meta["channel"]), float(meta["ts"]), meta.get("people") or []
     replace_id = meta.get("replace_id")
+    if channel not in cameras.channels():  # removed before the detector heard of it
+        return {"skipped": "unknown camera"}
     if not replace_id and not schedule.capture_allowed(capture_schedule, channel, ts)[0]:
         return {"skipped": "outside capture schedule"}
     scores = [p["shirtless_score"] for p in people if p.get("shirtless_score") is not None]
@@ -326,7 +363,8 @@ async def internal_heartbeat(request: Request):
         log.info("Detector online")
         await broadcast_status()
     # The detector only analyses cameras that are inside the capture schedule.
-    return {"ok": True, "active_channels": schedule.active_channels(capture_schedule, config.CHANNELS),
+    return {"ok": True, "channels": cameras.channels(),
+            "active_channels": schedule.active_channels(capture_schedule, cameras.channels()),
             "detect": schedule.detect_settings(capture_schedule),
             "zones": schedule.zone_settings(capture_schedule)}
 
@@ -339,7 +377,7 @@ async def api_get_schedule():
 @app.put("/api/schedule")
 async def api_put_schedule(request: Request):
     try:
-        new = schedule.validate(await request.json(), config.CHANNELS)
+        new = schedule.validate(await request.json(), cameras.channels())
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(400, str(exc))
     capture_schedule.clear()
@@ -358,7 +396,7 @@ async def api_put_schedule(request: Request):
 @app.get("/api/cameras/{channel}/frame.jpg")
 async def api_camera_frame(channel: int):
     """A current full-resolution frame, as the background for drawing detection areas."""
-    if channel not in config.CHANNELS:
+    if channel not in cameras.channels():
         raise HTTPException(404, "unknown channel")
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -369,6 +407,72 @@ async def api_camera_frame(channel: int):
     if not is_jpeg(resp.content):
         raise HTTPException(502, f"no frame from CH{channel}")
     return Response(resp.content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+async def checked_camera(data: dict, old: dict | None = None) -> dict:
+    try:
+        cam = cams.validate(data, old)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if data.get("test", True):
+        result = await cams.probe(cam)
+        bad = [f"{k} stream: {v['error']}" for k, v in result.items() if not v["ok"]]
+        if bad:
+            raise HTTPException(400, "Can't open the camera – " + "; ".join(bad))
+    return cam
+
+
+@app.get("/api/cameras")
+async def api_cameras():
+    return {"xvr_channels": config.CHANNELS, "cameras": [cams.public(c) for c in cameras.items]}
+
+
+@app.post("/api/cameras/test")
+async def api_test_camera(request: Request):
+    """Try a camera's streams without saving it: codec, size and fps of each, or the error."""
+    data = await request.json()
+    old = cameras.get(int(data["id"])) if str(data.get("id", "")).isdigit() else None
+    try:
+        cam = cams.validate(data, old)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return await cams.probe(cam)
+
+
+@app.post("/api/cameras")
+async def api_add_camera(request: Request):
+    cam = await checked_camera(await request.json())
+    try:
+        cam = cameras.add(cam)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    log.info("Camera added: CH%s %s (%s:%s%s)", cam["id"], cam["name"], cam["host"], cam["port"], cam["main"])
+    await cameras_changed()
+    return cams.public(cam)
+
+
+@app.put("/api/cameras/{cid}")
+async def api_update_camera(cid: int, request: Request):
+    old = cameras.get(cid)
+    if not old:
+        raise HTTPException(404, "not an added camera")
+    cam = await checked_camera(await request.json(), old)
+    cam = cameras.update(cid, cam)
+    log.info("Camera updated: CH%s %s (%s:%s%s)", cid, cam["name"], cam["host"], cam["port"], cam["main"])
+    await cameras_changed()
+    return cams.public(cam)
+
+
+@app.delete("/api/cameras/{cid}")
+async def api_delete_camera(cid: int):
+    """Remove an added camera. Its events stay (shown as CHn) until deleted or expired."""
+    if not cameras.get(cid):
+        raise HTTPException(404, "not an added camera")
+    cameras.remove(cid)
+    log.info("Camera removed: CH%s", cid)
+    await cameras_changed()
+    await asyncio.to_thread(shutil.rmtree, ring_dir(cid), True)
+    return {"ok": True}
 
 
 @app.post("/api/events/{event_id}/not-shirtless")
@@ -394,12 +498,16 @@ async def healthz():
     return {"ok": True, "event_stream_connected": stream_status.connected}
 
 
+def channel_list() -> list[dict]:
+    return [{"id": c, "name": cameras.name(c), "stream": f"ch{c}", "stream_hd": f"ch{c}_hd",
+             "xvr": c in config.CHANNELS} for c in cameras.channels()]
+
+
 @app.get("/api/config")
 async def api_config():
     offset = datetime.now().astimezone().utcoffset()
     return {
-        "channels": [{"id": c, "name": f"CH{c}", "stream": f"ch{c}", "stream_hd": f"ch{c}_hd"}
-                     for c in config.CHANNELS],
+        "channels": channel_list(),
         "tz": config.TZ_NAME,
         "utc_offset": int(offset.total_seconds()) if offset else 0,
         "event_codes": config.EVENT_CODES,

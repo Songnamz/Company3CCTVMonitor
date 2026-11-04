@@ -16,7 +16,7 @@ Browser ──https──► Cloudflare ──tunnel──► cloudflared (host)
 
 | Container | Role |
 |-----------|------|
-| `go2rtc`  | Pulls RTSP from the XVR (`chN` = sub stream, `chN_hd` = main stream) and serves it to browsers as MSE over a websocket. Its RTSP and WebRTC servers are disabled; it has no published ports. |
+| `go2rtc`  | Pulls RTSP from the XVR (`chN` = sub stream, `chN_hd` = main stream) and from cameras added in Settings, and serves it to browsers as MSE over a websocket. Its RTSP and WebRTC servers are disabled; it has no published ports. |
 | `detector`| Local AI (CPU). Reads each analysed camera's HD stream from go2rtc (up to 5 frames/s), finds people with YOLO11s and checks each person for a shirt with CLIP ViT-B/16 zero-shot. Posts an event to the app when a new person appears or someone is seen without a shirt. |
 | `app`     | Python/FastAPI. Holds a long-lived connection to the XVR event stream, grabs a snapshot on every face event, stores it in SQLite + `./data/snapshots`, pushes events to browsers via SSE, serves the UI. |
 | `nginx`   | The only published port (`127.0.0.1:8080`). Exposes just the go2rtc websocket and player JS under `/stream/`; every other `/stream/` path returns 403 so the go2rtc admin UI/API is never public. |
@@ -69,8 +69,9 @@ After editing `go2rtc/go2rtc.yaml` or `nginx/nginx.conf`: `docker compose restar
 
 ### Data
 
-Everything lives in `./data`: `events.db` (SQLite, WAL) and `snapshots/YYYY/MM/DD/*.jpg`
-(full image + `_thumb.jpg`) and `*_clip.mp4` (video clips). Back up that folder to back up everything.
+Everything lives in `./data`: `events.db` (SQLite, WAL; also settings and added cameras) and
+`snapshots/YYYY/MM/DD/*.jpg` (full image + `_thumb.jpg`) and `*_clip.mp4` (video clips), plus
+`ring/` (rolling recordings of added cameras, rebuilt automatically). Back up that folder to back up everything.
 
 ## Create a dedicated view-only XVR user
 
@@ -97,7 +98,7 @@ misses people standing still, so person detection runs locally in the `detector`
 container instead:
 
 1. Every `DETECT_INTERVAL_SECONDS` (1 s) per camera it takes the latest frame of the HD
-   stream and runs YOLO person detection (people under `PERSON_MIN_HEIGHT` px are ignored
+   stream and runs YOLO person detection (people under `PERSON_MIN_HEIGHT` px of a 1080p frame, scaled for other resolutions, are ignored
    as too far away).
 2. People are tracked between samples. An event is saved when a **new** person appears
    (at most one per camera per `PERSON_COOLDOWN_SECONDS`), so someone standing still for
@@ -193,6 +194,35 @@ the event. Areas apply to the AI detector only, not to XVR face events (`EVENT_C
 Outside a camera's schedule the detector stops analysing that camera completely (saves
 CPU) and no events are stored for it; its live view still works. The header shows
 **Capture off: CHx** and the live tile says *not capturing*. Changes take effect within ~10 s.
+
+## Adding cameras that aren't on the XVR (Settings tab)
+
+IP cameras with RTSP – e.g. a TP-Link VIGI or Tapo – can be added under **Settings → Cameras →
++ Add camera**: name, IP address, RTSP port (554), username, password and the stream paths
+(TP-Link: main `/stream1`, sub `/stream2`; on a Tapo the login is the *Camera Account* set in the
+Tapo app). **Test connection** shows each stream's codec, size and frame rate; **Add camera** tests
+again and only saves a camera whose streams open. The password may contain any characters.
+
+An added camera gets the next free channel number (CH5, CH6, … never reused, so old events keep
+their camera) and works like the XVR's: Live grid and HD view, AI detection, detect settings,
+schedule and detection areas. **Edit** (leave the password empty to keep it) and **Remove** are
+next to it; removing a camera keeps its events until they're deleted or expire.
+
+- **Video clips** can't come from the XVR, so the app keeps a rolling recording of the camera's main
+  stream (last 10 minutes, ~110 MB per 1440p camera, in `data/ring/`, outside the storage limit) and
+  cuts each event's clip from it about 15 s after the clip's end. Clips start and end on the camera's
+  keyframes, so with a long keyframe interval they are longer than 10 s.
+- **No XVR face events** for these cameras – only the AI detector's person / no-shirt events.
+- Cameras are stored in `data/events.db` (with their password) and registered with go2rtc through its
+  API; the app registers them again within 15 s if go2rtc restarts.
+
+**Camera settings to check** (in the camera's own web page / app):
+
+| Setting | Why |
+|---|---|
+| Video encoding **H.264** (not H.265 / "Smart coding") | Most browsers (Chrome/Firefox on PCs) can't play H.265: the HD view and videos stay black. Test connection warns about it |
+| Keyframe (I-frame) interval **1–2 s** (25–50 frames) | Live view starts at the next keyframe and clips are cut on them; a 12 s interval means up to 12 s of black and 24 s clips |
+| Main stream 1080p is plenty | AI decodes every frame of the main stream; 1440p H.265 costs noticeably more CPU |
 
 ## Image quality
 
@@ -340,6 +370,9 @@ rm -rf tests/data
 | `GET /api/config` | channels, timezone |
 | `GET /api/schedule` / `PUT /api/schedule` | per-camera settings: schedule, detect, `zones` (polygons, 0–1 of the frame) |
 | `GET /api/cameras/{ch}/frame.jpg` | a current full-resolution frame (for drawing areas) |
+| `GET /api/cameras` | XVR channels and added cameras (never their passwords) |
+| `POST /api/cameras/test` | body `{host, port, user, password, main, sub}` → codec/size of each stream, or the error |
+| `POST /api/cameras` / `PUT /api/cameras/{ch}` / `DELETE /api/cameras/{ch}` | add (tests first), edit (empty password = keep), remove |
 | `GET /api/status` | event-stream connected, last error, last event time, today's count |
 | `GET /api/events?channel=&start=&end=&before=&limit=&shirtless=` | epoch seconds; newest first; page with `before=<last id>`; returns `has_more` |
 | `DELETE /api/events/{id}` | delete event + files |

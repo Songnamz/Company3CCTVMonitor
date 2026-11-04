@@ -166,10 +166,9 @@ class Capturer:
     async def grab(self, channel: int) -> tuple[bytes, bytes, str] | None:
         # go2rtc first: a full-resolution frame from the main stream. The XVR's own
         # snapshot.cgi is only sub-stream resolution (352x288) on this model.
-        sources = [
-            ("go2rtc", f"{config.GO2RTC_URL}/api/frame.jpeg?src=ch{channel}_hd", False),
-            ("xvr", f"{config.XVR_BASE}/cgi-bin/snapshot.cgi?channel={channel}", True),
-        ]
+        sources = [("go2rtc", f"{config.GO2RTC_URL}/api/frame.jpeg?src=ch{channel}_hd", False)]
+        if channel in config.CHANNELS:  # added cameras aren't on the XVR
+            sources.append(("xvr", f"{config.XVR_BASE}/cgi-bin/snapshot.cgi?channel={channel}", True))
         for name, url, auth in sources:
             try:
                 jpeg = await self._fetch(url, auth)
