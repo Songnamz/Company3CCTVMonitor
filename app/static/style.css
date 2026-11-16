@@ -211,23 +211,27 @@ input[type=datetime-local] {
 .nav.prev { left: 8px; }
 .nav.next { right: 8px; }
 
-/* Toasts */
+/* Toasts: one compact notification centred in the header, so it never covers the camera grid. */
 .toasts {
-  position: fixed; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); z-index: 60;
-  display: flex; flex-direction: column; gap: 8px; width: min(340px, calc(100vw - 24px));
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 60;
+  top: max(8px, env(safe-area-inset-top));
+  display: flex; flex-direction: column; gap: 6px; width: min(360px, calc(100vw - 24px));
+  pointer-events: none;
 }
 .toast {
-  display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border);
+  display: flex; gap: 10px; align-items: center; height: 44px; padding: 4px 10px 4px 4px; border: 1px solid var(--border);
   border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .5); cursor: pointer; animation: slide .25s ease-out;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .5); cursor: pointer; animation: slide .25s ease-out;
+  pointer-events: auto; overflow: hidden;
 }
-.toast img, .toast .noimg { width: 96px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; flex: none; background: #000; }
-.toast .tt { font-weight: 600; }
-.toast .ts { color: var(--muted); font-size: 12px; }
+.toast img, .toast .noimg { height: 100%; width: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 5px; flex: none; background: #000; }
+.toast > div { min-width: 0; line-height: 1.25; }
+.toast .tt { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast .ts { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .toast.alert { border-left-color: var(--err); background: #2a1416; }
 .toast.alert .tt { color: #ff8a8e; }
 .toast.out { opacity: 0; transition: opacity .3s; }
-@keyframes slide { from { transform: translateY(20px); opacity: 0; } }
+@keyframes slide { from { transform: translateY(-12px); opacity: 0; } }
 
 @media (max-width: 640px) {
   .topbar { gap: 8px 10px; padding-left: 12px; padding-right: 12px; flex-wrap: wrap; }

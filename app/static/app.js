@@ -800,6 +800,10 @@ async function lbDelete() {
 
 function toast(ev) {
   const box = $('#toasts');
+  // Only one toast fits in the header. A newer event replaces it, except that a plain
+  // event never hides a no-shirt alert that is still showing (it's in the Events tab anyway).
+  const shown = box.firstElementChild;
+  if (shown && shown.classList.contains('alert') && !shown.classList.contains('out') && !ev.shirtless) return;
   const t = el('div', {
     class: ev.shirtless ? 'toast alert' : 'toast',
     onclick: () => {
@@ -812,8 +816,7 @@ function toast(ev) {
   el('div', {},
     el('div', { class: 'tt' }, `${eventLabel(ev)} · ${channelName(ev.channel)}`),
     el('div', { class: 'ts' }, fullTime(ev.ts))));
-  box.prepend(t);
-  while (box.children.length > 4) box.lastChild.remove();
+  box.replaceChildren(t);
   const ttl = ev.shirtless ? 20000 : 6000;
   setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, ttl);
 }
