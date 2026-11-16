@@ -118,8 +118,14 @@ function whenPlayerReady() {
   return playerReady;
 }
 
-function makeStream(name) {
+function makeStream(name, muted = true) {
   const v = document.createElement('video-stream');
+  // Start muted so the cameras' audio doesn't blare out after login; the user can unmute
+  // a stream from its video controls. The player builds its <video> in oninit().
+  v.oninit = function () {
+    Object.getPrototypeOf(this).oninit.call(this);
+    this.video.muted = muted;
+  };
   v.dataset.src = name;
   v.dataset.started = Date.now();
   v.DISCONNECT_TIMEOUT = 0; // tear down immediately when removed from the DOM
@@ -152,7 +158,7 @@ setInterval(() => {
     const stalled = now - Number(v.dataset.lastProgress || v.dataset.started) > STALL_MS;
     if ((mode === 'error' && age > RETRY_MS) || stalled) {
       console.info(`stream ${v.dataset.src}: ${mode === 'error' ? 'error' : 'stalled'}, reconnecting`);
-      v.replaceWith(makeStream(v.dataset.src));
+      v.replaceWith(makeStream(v.dataset.src, video ? video.muted : true));  // keep the user's mute choice
     }
   });
 }, 2000);
