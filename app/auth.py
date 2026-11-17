@@ -9,7 +9,7 @@ import hmac
 import logging
 import secrets
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
@@ -19,7 +19,8 @@ import config
 log = logging.getLogger("auth")
 
 COOKIE = "cctv_session"
-PUBLIC_PATHS = {"/login", "/api/login", "/healthz", "/logo.png"}
+PUBLIC_PATHS = {"/login", "/login.js", "/api/login", "/healthz", "/logo.png"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 FAIL_WINDOW = 15 * 60
 MAX_FAILS_PER_IP = 5
@@ -51,6 +52,20 @@ def client_ip(request: Request) -> str:
 def is_https(request: Request) -> bool:
     return (request.headers.get("x-forwarded-proto") == "https"
             or '"https"' in request.headers.get("cf-visitor", ""))
+
+
+def same_origin(request: Request) -> bool:
+    """CSRF guard for state-changing requests, on top of the SameSite=Lax cookie (which
+    still lets sibling subdomains of the same site through). Browsers send Origin on every
+    POST/PUT/DELETE; a request without it (curl, the detector) has no ambient cookie to abuse."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return request.headers.get("sec-fetch-site", "same-origin") in ("same-origin", "none")
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+    try:
+        return bool(host) and (urlsplit(origin).hostname or "").lower() == host
+    except ValueError:
+        return False
 
 
 def safe_next(target: str | None) -> str:
@@ -117,9 +132,16 @@ class LoginRequired:
 
     async def __call__(self, scope, receive, send):
         # /internal/ is for the detector container (token-checked; blocked in nginx).
-        if scope["type"] != "http" or scope["path"] in PUBLIC_PATHS or scope["path"].startswith("/internal/"):
+        if scope["type"] != "http" or scope["path"].startswith("/internal/"):
             return await self.app(scope, receive, send)
         request = Request(scope)
+        if request.method not in SAFE_METHODS and not same_origin(request):
+            log.warning("Blocked cross-site %s %s (Origin %s) from %s", request.method, scope["path"],
+                        request.headers.get("origin"), client_ip(request))
+            response = JSONResponse({"detail": "cross-site request refused"}, status_code=403)
+            return await response(scope, receive, send)
+        if scope["path"] in PUBLIC_PATHS:
+            return await self.app(scope, receive, send)
         if self.auth.valid_token(request.cookies.get(COOKIE)):
             return await self.app(scope, receive, send)
         path = scope["path"]

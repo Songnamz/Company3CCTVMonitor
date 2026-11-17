@@ -50,17 +50,6 @@
     <button type="submit">Sign in</button>
   </form>
   <div class="copyright">© ทรงนำ สารภัย 3-35</div>
-  <script>
-    const q = new URLSearchParams(location.search);
-    document.getElementById('next').value = q.get('next') || '/';
-    const err = q.get('error');
-    if (err) {
-      const box = document.getElementById('error');
-      box.textContent = err === 'locked'
-        ? 'Too many failed attempts. Try again in 15 minutes.'
-        : 'Wrong password.';
-      box.hidden = false;
-    }
-  </script>
+  <script src="/login.js"></script>
 </body>
 </html>
